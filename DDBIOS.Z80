@@ -1,0 +1,1293 @@
+;
+;	DDBIOS as shown in the documentation listings
+;	This is matching code section and does include
+;	the diagnostics and format routines.
+;
+;	Version 2.00 as of 09/09/91 06:18 pm
+;
+;	General address equates
+;
+IOBYTE	EQU	03H
+CDISK	EQU	04H
+RQST	EQU	39H	;request
+TADDR	EQU	40H	;transfer address
+T	EQU	TADDR
+UNIT	EQU	T+02H	;new unit byte
+SCTR	EQU	T+03H	;sector
+TRK	EQU	T+04H	;track
+NREC	EQU	T+05H	;# of sectors
+ERMASK	EQU	T+06H	;error mask
+ERSTAT	EQU	T+07H	;error flag store
+IDSV	EQU	T+08H	;4 bytes (used for track id command)
+SIDE	EQU	T+09H	;id side byte
+CMDSV	EQU	T+0CH	;command save
+SPSV	EQU	T+0DH	;sp save
+TEMP1	EQU	T+10H	;1 byte temp reg
+TEMP2	EQU	T+11H	;2 byte temp reg
+IXSAV	EQU	T+13H	;sectors/track store
+UNITCK	EQU	T+15H	;old unit byte
+RSEEK	EQU	T+16H	;# of reseeks
+RTRY	EQU	T+17H	;# of retrys
+ADRIVE	EQU	T+18H	;store of A: drive density type
+BDRIVE	EQU	T+19H	;store of B: drive type
+CBFLAG	EQU	T+1AH	;flag to indicate wboot or cboot for loader on disk
+SSTACK	EQU	80H	;system stack
+COLD	EQU	80H	;cold start address
+BFFR1	EQU   0800H	;for test/format
+BFFR2	EQU   0900H
+FBUFF	EQU   1000H	;format buffer for image
+;
+;	Ports used by disk controller
+;
+X	EQU	60H	;ports for 1791
+RSET	EQU	X+0	;controller reset address
+SELECT	EQU	X+3	;drive select port
+STATUS	EQU	X+4	;status port
+TRACK	EQU	X+5	;track port
+SECTOR	EQU	X+6	;sector port
+DATA	EQU	X+7	;data port
+CMD	EQU	X+4	;command port
+;
+;	Disk codes for controller
+;
+FINT	EQU	0D0H	;force interrupt
+RDCMD	EQU	088H	;read command
+RDACMD	EQU	0C4H	;read address command
+WRCMD	EQU	0A8H	;write command
+WRTCMD	EQU	0F4H	;write track command
+;
+;	General equates
+;
+NBYTES	EQU	128		;one sector's worth
+MHZ	EQU	3		;round(CLOCK SPEED)
+MS32	EQU	(96*MHZ+8)/10	;time for 32 ms delay
+MS50	EQU	(150*MHZ+8)/10	;time for 50 ms delay
+MS83	EQU	(250*MHZ+8)/10	;time for 83 ms delay
+;
+;	Addresses used by this bios
+;
+CSE	EQU	0e006h		;monitor const
+CIE	EQU	0e009h		;monitor conin
+COE	EQU	0e00ch		;monitor conout
+;
+COBSYS	EQU	0e800h		;CO system rom
+COBSY1	EQU	0e803h		;CO system rom 1
+MNITR	EQU	0e002h		;cold boot of monitor entry
+MONITR	EQU	0e003h		;warm boot entry
+;
+;	Hooks into monitor - have to determine version
+;
+PTXTR	EQU	0e741h
+PTXTV	EQU	0e707h
+SCANR	EQU	0e79ah
+SCANV	EQU	0e760h
+PACCR	EQU	0e74dh
+PACCV	EQU	0e713h
+CRLFR	EQU	0e72fh
+CRLFV	EQU	0e6f5h
+;
+	ASEG
+	ORG	0F000H
+;
+CBOOT:	NOP			;cold boot
+	LD	E,0F5H
+WBOOTE: JP	BOOT		;warm boot
+CONST:	JP	CSE		;console status
+CONIN:	JP	CIE		;console input
+CONOUT: JP	COE		;console output
+DTYPE:	JP	UNITSL		;setup unit byte
+;
+	NOP			;*** punch char out
+	NOP
+	NOP
+	NOP			;*** reader char in
+	NOP
+	NOP
+HME:	JP	HOME		;move head to home
+SDSKE:	JP	SELDSK		;select disk
+STRKE:	JP	SETTRK		;set track number
+SSECE:	JP	SETSEC		;set sector number
+SDMAE:	JP	SETDMA		;set dma address
+RDE:	JP	READ		;read sector
+WRE:	JP	WRITE		;write sector
+LDE:	JP	LOADER		;*** list status
+SVE:	JP	SAVER		;*** sector translate
+FMATE:	JP	FMAT		;format disk
+;
+;	Tables which contain disk definitions
+;
+;	Equates for the ix register offset into the
+;	below format tables
+;
+nsctrs	equ	0
+ntrks	equ	1
+headr	equ	2
+gap1	equ	3
+gap2	equ	4
+gap3	equ	5
+rscmd	equ	6
+skncmd	equ	7
+skcmd	equ	8
+;
+	ORG	CBOOT+3FH
+;
+STDSDT: DB	1ah			;sectors per track
+	DB	4dh			;tracks per side
+	DB	49h			;index header gap
+	DB	06h,0bh,1bh		;gaps 1, 2, 3
+	DB	08h			;restore cmd
+	DB	18h			;seek w/no verify cmd
+	DB	1ch			;seek w/verify cmd
+STDDDT: DB	32h			;sectors per track
+	DB	4dh			;tracks per side
+	DB	54h			;index header gap
+	DB	08h,16h,10h		;gaps 1, 2, 3
+	DB	08h			;restore cmd
+	DB	18h			;seek w/no verify cmd
+	DB	1ch			;seek w/verify cmd
+DDT256: DB	1ah			;sectors per track
+	DB	4dh			;tracks per side
+	DB	2eh			;index header gap
+	DB	08h,16h,36h		;gaps 1, 2, 3
+	DB	08h
+	DB	18h			;seek w/no verify cmd
+	DB	1ch			;seek w/verify cmd
+MINSDT: DB	12h			;sectors per track
+	DB	23h			;tracks per side
+	DB	0ch			;index header gap
+	DB	06h,0bh,08h		;gaps 1, 2, 3
+	DB	0bh
+	DB	1bh			;seek w/no verify cmd
+	DB	1fh			;seek w/verify cmd
+MINDDT: DB	1dh			;sectors per track
+	DB	23h			;tracks per side
+	DB	54h			;index header gap
+	DB	08h,16h,10h		;gaps 1, 2, 3
+	DB	0bh
+	DB	1bh			;seek w/no verify cmd
+	DB	1fh			;seek w/verify cmd
+;
+;	Start the system
+;
+BOOT:	LD	SP,COLD 	;set the stack
+	IN	A,(7FH)
+	LD	A,0EFH		;pattern for select of each drive
+	PUSH	HL
+	LD	(SPSV),SP	;save present stack
+	POP	HL
+BT1:	RRCA			;shift pattern towards bit 0
+	JR	NC,BT2
+	OUT	(SELECT),A	;send pattern
+	CALL	FRCINT		;force an interrupt
+	AND	4		;check status for home
+	JR	Z,BT3
+	XOR	A
+	OUT	(TRACK),A	;set track to 0
+	LD	A,02H
+	LD	(TRK),A 	;set bios track to 2
+	LD	A,1AH
+	CALL	SEEK4		;seek track in TRK
+BT3:	IN	A,(SELECT)	;read back pattern
+	JR	BT1		;and loop to next
+;
+BT2:	XOR	A
+	CALL	UNITSL		;check diskette type
+	JR	NZ,GOMON	;if any problems
+BT4:	CALL	BOOTLD		;else read in the boot sector
+	LD	HL,COLD
+	LD	A,(HL)
+	AND	0CEH		;see if cp/m or sdos
+	JR	NZ,BT5		;brif so
+	BIT	0,(HL)		;else see if low bit set
+	JP	NZ,COLD 	;if so then goto loader
+BT5:	LD	A,0C3H		;check for cap software
+	LD	HL,COBSYS
+	CP	(HL)
+	JP	Z,COBSY1
+GOMON:	LD	A,0E0H		;if loader didn't make it
+	LD	HL,MNITR	;see if monitor is there
+	CP	(HL)
+	JP	Z,MONITR	;if it is then goto it
+	HALT			;else die here!
+BOOTLD: LD	HL,COLD 	;setup load address
+	LD	(TADDR),HL
+	XOR	A		;Track 0, Sector 1
+	LD	(TRK),A
+	INC	A
+	LD	(SCTR),A
+	CALL	READ		;read it into buffer
+	RET	Z		;if read ok then back to caller
+	JR	GOMON		;else test for monitor
+;
+CHGTYP: LD	A,(UNIT)
+	LD	E,A		;unit type to e
+	LD	A,04		;check for drive type
+	CP	B
+	JR	Z,DD8256	;set 8" dd 256 byte
+	DEC	A
+	CP	B
+	JR	Z,SD8		;set 8" sd 128 byte
+	DEC	A
+	CP	B
+	JR	Z,SD5		;set 5" sd 128 byte
+	DEC	A
+	CP	B
+	JR	Z,DD5		;set 5" dd 128 byte
+	OR	01H
+	POP	HL
+	RET
+;
+;	Set to single density, 128 byte 8"
+;
+SD8:	LD	A,E		;recall unit type
+	RES	6,A		;reset double density
+	RES	7,A		;reset 256 byte
+	LD	(UNIT),A
+	RET
+;
+;	Set to 256 byte 8"
+;
+DD8256: LD	A,E
+	SET	7,A		;set 256 byte cntrl
+	LD	(UNIT),A
+	RET
+;
+;	Set to 5 1/4" drive
+;
+SD5:	LD	A,E
+	SET	5,A		;set 5" select bit
+	LD	(UNIT),A
+	RET
+;
+;	Set to double density
+;
+DD5:	LD	A,E
+	SET	6,A		;set double density
+	LD	(UNIT),A
+	RET
+;
+;	Sets up the unit byte for system use
+;	to install new diskettes or drives
+;
+UNITSL: LD	B,04H		;set counter for unit
+	AND	0FH		;strip drive select
+	OR	40H		;default to 8" dd
+	LD	(UNIT),A	;save unit number
+	LD	HL,(TADDR)	;save transfer address
+	LD	(TEMP2),HL
+	CALL	USL1		;set unit byte bits
+	LD	HL,(TEMP2)	;recall transfer address
+	LD	(TADDR),HL
+	LD	A,(UNIT)	;get unit type
+	RET	NZ		;back if error flag set
+	JR	NC,USL0
+	SET	7,A		;set wait state bit
+USL0:	LD	E,A
+	LD	A,(SIDE)	;check double side bit
+	OR	A
+	LD	A,E		;recall unit type data
+	RES	4,A		;setup for single sided
+	JP	P,SS
+	SET	4,A		;switch to double sided
+SS:	LD	(UNIT),A	;save the updated unit type
+	XOR	A		;clear z flag
+	RET
+;
+USL1:	PUSH	BC		;save work regs
+	PUSH	IX
+	PUSH	HL
+	LD	(SPSV),SP	;save this stack pointer
+	POP	HL
+	CALL	DRVSET		;set the drive
+	CALL	IDRD		;read the track id
+	POP	IX
+	POP	BC
+	LD	A,(IDSV+3)	;grab the sector length code
+	RRCA			;see if 256
+	RET	Z		;brif not
+	DEC	B		;else decrement unit ctr
+	CALL	CHGTYP		;and change drive type
+	JR	USL1		;loop back again
+;
+;	Home the drive
+;
+HOME:	LD	(SPSV),SP
+	PUSH	IX
+	CALL	DRVSET		;select drive
+	CALL	HOME1		;restore it
+	POP	IX
+	RET
+;
+;	Select disk
+;
+SELDSK: LD	A,C
+	LD	(UNIT),A
+	RET
+;
+;	Set track
+;
+SETTRK: LD	A,C
+	LD	(TRK),A
+	RET
+;
+;	Set sector
+;
+SETSEC: LD	A,C
+	LD	(SCTR),A
+	RET
+;
+;	Set dma address
+;
+SETDMA: LD	(TADDR),BC
+	RET
+;
+;	Read a sector
+;
+READ:	LD	BC,0301H
+	LD	(RSEEK),BC	;save reseeks and retries
+	PUSH	IX
+	LD	IX,(IXSAV)
+READ1:	PUSH	BC
+	CALL	RDSC		;read a sector
+	POP	BC
+	JR	Z,RWRET 	;if ok then finish
+	CALL	RETRY		;else retry if error
+	JR	READ1
+;
+;	Common read/write return
+;
+RWRET:	POP	IX
+	RET
+;
+;	Write a sector
+;
+WRITE:	LD	BC,0301H
+	LD	(RSEEK),BC	;save reseeks and retries
+	PUSH	IX
+	LD	IX,(IXSAV)
+WRITE1: PUSH	BC
+	CALL	WRSC		;write a sector
+	POP	BC
+	JR	Z,RWRET
+	CALL	RETRY		;if error then retry
+	JR	WRITE1
+;
+;	Read/write retry handler
+;
+RETRY:	DJNZ	RETRY2		;do (b) retries without reseeks
+	LD	A,(RTRY)
+	LD	B,A
+	DEC	C
+	JP	P,RETRY1	;do (c) reseeks
+	POP	AF
+	POP	IX
+	XOR	A
+	INC	A		;set error flag
+	RET
+;
+RETRY1: PUSH	BC
+	CALL	HOME1		;restore drive
+	POP	BC
+RETRY2: RET
+;
+;	Home the drive after main HOME sets up
+;
+HOME1:	LD	(SPSV),SP
+	LD	A,(IX+RSCMD)	;restore to track 0
+	CALL	SEEK2
+	XOR	A		;reset error flag
+	RET
+;
+;	Check drive select and change if different
+;
+DRVSET: LD	DE,UNIT
+	LD	A,(DE)
+	AND	0E0H		;strip drive type bits
+	LD	C,A		;put into c
+	LD	A,(DE)
+	AND	03H		;strip drive number
+	LD	B,A		;put into b
+	LD	A,01H		;set initial drive position bit
+	JR	Z,DRVSEL	;all set if drive number is 'a:'
+CKDRV1: RLCA			;else shift into place
+	DJNZ	CKDRV1
+DRVSEL: OR	C		;merge drive type
+	AND	7FH		;strip wait state bit
+	LD	B,A		;put into b
+	LD	A,C		;now test for drive type table
+	LD	IX,STDSDT
+	CP	00H		;8" sd?
+	JR	Z,CKDRV
+	LD	IX,STDDDT
+	CP	40H		;8" dd?
+	JR	Z,CKDRV
+	LD	IX,DDT256
+	CP	0C0H		;8" dd w/256 byte sectors?
+	JR	Z,CKDRV
+	LD	IX,MINSDT
+	CP	20H		;5" sd?
+	JR	Z,CKDRV
+	LD	IX,MINDDT	;else is 5" dd
+CKDRV:	LD	(IXSAV),IX
+	PUSH	BC
+	POP	AF		;get select code
+	CPL			;invert for board data buffers
+	OUT	(SELECT),A	;send it
+	LD	A,(DE)
+	LD	(UNITCK),A	;set old=new
+	CALL	DELAY		;delay for drive select
+RDYCK:	IN	A,(STATUS)
+	AND	80H		;test for ready to come back
+	JP	NZ,END2 	;if not there then handle
+	RET			;else we are done
+;
+;	Read the track id
+;
+IDRD:	CALL	WAIT		;force not busy
+	LD	HL,IDSV
+	LD	BC,0667H	;b=# of bytes, c=data port
+	LD	A,0F8H
+	LD	(ERMASK),A	;set error mask
+	CALL	SWEB		;enable wait states
+	LD	A,RDACMD
+	CALL	RDSC0		;read id
+	LD	A,(IDSV)
+	CP	4DH		;is track > 76
+	JP	NC,SEEK0	;if so then indicate invalid track
+	OUT	(TRACK),A	;else set track register
+	XOR	A		;reset error flag
+	RET
+;
+;	Delays - each count in a takes 256*13*MHZ
+;	delay(approx.). User should set MHZ equate
+;	at start of file for times.
+;
+DELAY:	LD	A,(UNIT)
+	BIT	5,A		;check drive type
+	LD	A,MS32		;set delay for 32 ms
+	JR	Z,DELAY		;brif 8"
+	LD	A,MS50		;set delay for 50 ms for 5"
+DELAY1: LD	B,00H
+DELAY2: DJNZ	DELAY2		;loop 256 times
+	DEC	A		;then decrement outer loop
+	JR	NZ,DELAY1
+	RET
+;
+;	Read sector command
+;
+RDSC:	CALL	DRINIT
+	LD	A,RDCMD 	;read command
+RDSC0:	LD	(CMDSV),A
+	LD	DE,(CMDSV)
+	PUSH	DE
+	DI			;disable ints during read
+	OUT	(CMD),A
+	JR	RDSCD0		;delay
+RDSCD0: JR	RDSCD1
+RDSCD1: INIR			;input data
+	POP	DE
+	LD	(CMDSV),DE
+	EI			;ok to reenable
+	JR	END
+;
+;	Drive initialization routine
+;
+DRINIT: POP	HL
+	LD	(SPSV),SP	;set up error return
+	PUSH	HL
+	LD	A,(UNIT)	;get drive select data
+	LD	D,A
+	LD	A,(UNITCK)	;get previous drive select
+	CP	D		;same as before?
+	JR	Z,DINIT1	;if so, skip drvset
+	CALL	DRVSET
+	CALL	IDRD
+DINIT1: CALL	SEEK		;move into place
+	LD	A,0FEH
+	LD	(ERMASK),A
+	JP	TRINT		;init for disk transfer
+;
+;	Write sector command
+;
+WRSC:	CALL	DRINIT
+	LD	A,0A8H
+	LD	(CMDSV),A
+	DI			;no time for interrupts
+	OUT	(CMD),A
+	JR	WRSCD0		;delay
+WRSCD0: JR	WRSCD1
+WRSCD1: OTIR
+	EI			;now they're ok
+;
+;	End of command
+;
+END:	CALL	WAIT
+	IN	A,(STATUS)
+	LD	D,A
+	LD	A,(ERMASK)
+	AND	D		;check for errors
+	RET	Z
+	LD	A,D
+END2:	LD	(ERSTAT),A	;save error bits
+	CALL	DELAY
+	OR	01H
+	LD	SP,(SPSV)
+	CALL	UNITFX		;force drvset
+	RET
+;
+;	Seek track
+;
+SEEK:	CALL	RDYCK
+	LD	A,(IX+NTRKS)
+	LD	C,A
+	LD	A,(TRK)
+	CP	C		;check for valid track
+	JR	C,SEEK1
+SEEK0:	LD	A,0FH
+	JR	END2		;skip - invalid track
+;
+SEEK1:	LD	C,A		;new track #
+	IN	A,(TRACK)
+	CP	C		;same as present?
+	RET	Z		;if same, then done
+	LD	A,(IX+SKCMD)	;else seek track
+SEEK4:	LD	(CMDSV),A
+	LD	B,0D2H
+SEEK3:	DJNZ	SEEK3		;delay
+	CALL	WAIT		;wait for not busy
+	LD	A,(TRK)
+	OUT	(DATA),A	;send track to seek
+	LD	A,80H
+	LD	(ERMASK),A	;set error mask for not ready
+	LD	A,(CMDSV)
+	OUT	(CMD),A 	;send command
+	LD	B,0AH
+SEEK5:	DJNZ	SEEK5		;delay
+	CALL	END		;check for busy
+	CALL	DELAY		;then delay a bit
+	LD	A,(CMDSV)
+	CP	(IX+RSCMD)	;if last command restore
+	RET	Z		;finish
+	IN	A,(STATUS)
+	AND	10H		;check for seek error
+	JR	NZ,SEEK2	;if so set error
+	IN	A,(TRACK)
+	CP	C		;test track
+	RET	Z		;if match, seek ok
+SEEK2:	LD	A,20H		;track seek error bit
+END2JP: JR	END2
+;
+;	Wait and test busy - generate a FDC
+;	reset if no response in time
+;
+WAIT:	LD	E,0F5H		;******
+	PUSH	BC		;******
+	LD	C,02H		;******
+WAIT2:	IN	A,(STATUS)
+	AND	01H		;test busy
+	JR	Z,DWAIT
+	DJNZ	WAIT2		;delay if still busy
+	DEC	E
+	JR	NZ,WAIT2
+	DEC	C		;******
+	JR	NZ,WAIT2	;******
+	POP	BC		;******
+	IN	A,(SELECT)
+	OR	80H		;set /MR latch
+	OUT	(RSET),A
+WAIT3:	DJNZ	WAIT3		;delay
+	IN	A,(RSET)	;reset /MR latch
+	CALL	FRCINT		;kill auto restore
+	LD	A,(IX+RSCMD)	;send restore command
+	CALL	SEEK2
+	LD	A,0FEH		;error status
+	JR	END2JP		;force retry
+;
+;	Disable wait states - allow selects to
+;	disk controller
+;
+DWAIT:	POP	BC
+	IN	A,(SELECT)
+	OR	80H		;wait en inactive
+	OUT	(SELECT),A
+	RET
+;
+;	Enable wait states - IRQ or INTRQ needed
+;	to release ready
+;
+SWEB:	IN	A,(SELECT)
+	AND	7FH		;wait en active
+	OUT	(SELECT),A
+	RET
+;
+;	Initialize for disk transfer
+;	****** big difference
+TRINT:	LD	B,0
+	LD	A,(IX+NSCTRS)
+	INC	A
+	LD	C,A
+	LD	A,(SCTR)
+	CP	C		;check for side
+	JR	C,TRINT0
+	LD	B,10H
+	DEC	C
+	SUB	C		;if side 2, subtrack
+TRINT0: PUSH	AF
+	CALL	TRINT1
+	POP	AF
+	OUT	(SECTOR),A
+	LD	BC,8067H
+	LD	A,(UNIT)
+	RLCA
+	JR	NC,SWEB
+	LD	B,00H
+	JR	SWEB
+;
+TRINT1: IN	A,(SELECT)
+	CPL	
+	LD	E,A
+	AND	10H
+	CP	B
+	RET	Z
+	LD	A,E
+	AND	6FH
+	OR	B
+	CPL
+	OUT	(SELECT),A
+	LD	B,0D2H		;delay for side change
+TRINT2: DJNZ	TRINT2
+	JP	IDRD
+;
+;	Force interrupt command for 1795
+;	Return: Status in a
+;
+FRCINT: LD	A,FINT
+	OUT	(CMD),A
+	LD	A,0AH
+FRC1:	DEC	A
+	JR	NZ,FRC1
+	IN	A,(STATUS)
+	RET
+;
+;	Load a # of sectors (NREC)
+;
+LOADER: CALL	UNITFX		;force drive setup
+LD1:	CALL	READ		;read a sector
+	RET	NZ
+	CALL	INCP		;increment track/sector
+	JR	NZ,LD1
+	RET
+;
+;	Save a # of sectors (NREC)
+;
+SAVER:	CALL	UNITFX
+SV1:	CALL	WRITE		;write a sector
+	RET	NZ
+	CALL	INCP		;increment
+	JR	NZ,SV1
+	RET
+;
+;	Increment sector and track
+;
+INCP:	LD	HL,(TADDR)
+	LD	DE,COLD 	;set to 128 bytes
+	LD	A,(UNIT)	;check for 256 bytes
+	RLCA
+	JR	NC,INCP1
+	LD	DE,0100H	;set to 256
+INCP1:	ADD	HL,DE
+	LD	(TADDR),HL
+	LD	HL,NREC 	;point to # of records
+	DEC	(HL)		;less one
+	RET	Z
+	DEC	HL
+	DEC	HL		;point to sctr
+	INC	(HL)		;up one
+	LD	A,(IDSV+1)	;set sign bit if ds
+	OR	A
+	PUSH	IX
+	LD	IX,(IXSAV)	;get index for drive stats
+	LD	A,(IX+0)	;get # of sectors
+	POP	IX
+	JP	P,INCP2
+	RLCA			;if ds, shift left
+INCP2:	INC	A
+	CP	(HL)		;last sctr on track?
+	RET	NZ		;if not, return
+	LD	(HL),01H	;reset sector to 1
+	INC	HL
+	INC	(HL)		;bump track #
+	OR	A
+	RET
+;
+;	Format a disk - formats according to disk type
+;	stored in UNIT
+;
+FMAT:	CALL	UNITFX		;force drive setup
+	LD	(TEMP2),SP	;save present stack
+	PUSH	IY		;save regs
+	PUSH	IX
+	PUSH	HL
+	LD	HL,FBUFF	;pointer to image area
+	LD	(TADDR),HL
+	LD	(SPSV),SP	;set stack save
+	POP	HL
+	CALL	DRVSET		;setup unit select
+	CALL	Z,HOME1 	;continue if no errors
+	JR	NZ,ERXIT
+	CALL	SCTRIM		;make sector image in ram
+	CALL	TRCKIM		;make track image in ram
+	CALL	SIDECK		;set hl for side data
+	XOR	A
+IDSET:	CALL	SETID		;set sector and track id
+	PUSH	BC
+	CALL	FMAT1		;format 1 track
+	CALL	NXTRK		;if double sided
+	POP	BC		;do both sides
+	JR	NZ,FINISH	;quit if errors
+	CP	(IX+NTRKS)	;reached last track yet?
+	JR	NZ,IDSET	;brif not
+FINISH: LD	A,76		;putting 76 here
+	LD	(TRK),A 	;monitor command to
+	IN	A,(SELECT)	;fix bit 5 so monitor
+	RES	5,A		;thinks the drive is
+	OUT	(SELECT),A	;single sided
+	LD	DE,UNITCK
+	LD	A,(DE)		;fix unitck to feflect
+	SET	5,A		;change in select
+	LD	(DE),A		;register
+	POP	IX
+	POP	IY
+	RET
+;
+ERXIT:	POP	IX
+	LD	SP,(TEMP2)
+	RET
+;
+;	Sector image control routine
+;
+;	Enter with: IX -> table of disk type variables
+;		 TADDR = buffer space to be used for image
+;
+;	Note: This routine puts the first post data gap right
+;	after the header.  TRCKIM then uses the image from this
+;	point to duplicate the required number of sectors.
+;
+SCTRIM: LD	HL,(TADDR)	;get image buffer ptr
+	LD	A,(IX+GAP2)	;check for dd or sd
+	RRCA			;if lsb of gap2 = 0
+	LD	A,4EH		;use dd fill char
+	JP	NC,HEADER
+	LD	A,0FFH		;else use sd fill char
+HEADER: LD	E,A
+	LD	B,(IX+HEADR)	;get index fill
+	CALL	IMBLD
+	LD	B,(IX+GAP3)	;get post data gap fill
+	CALL	IMBLD
+	XOR	A
+	LD	B,(IX+GAP1)	;sync field
+	CALL	IMBLD
+	CALL	MRKCHK		;see if dd for additional bytes
+	LD	A,0FEH		;set id address mark
+	LD	(HL),A
+	INC	HL
+	PUSH	HL
+	EXX
+	POP	DE		;put 1st id byte addr -> de'
+	EXX
+	XOR	A
+	LD	B,04H		;clear track, side, sector and length
+	CALL	IMBLD
+	LD	A,0F7H		;id field crc
+	LD	(HL),A
+	INC	HL
+	LD	B,(IX+GAP2)	;post id gap
+	LD	A,B
+	SRL	A
+	INC	A
+	LD	C,A		;set (gap2/2+1)
+	LD	A,E
+	CALL	IMBLD
+	LD	B,C		;use for next gap
+	XOR	A
+	CALL	IMBLD
+	CALL	MRKCHK		;see if we need dd additional bytes
+	LD	A,0FBH		;data address mark
+	LD	(HL),A
+	INC	HL
+	LD	B,80H		;set for 128 bytes
+	LD	A,(UNIT)
+	RLCA			;check bit 7
+	JR	NC,IDM
+	LD	B,00H		;if set then use 256 bytes
+IDM:	LD	A,0E5H		;sector fill char
+	CALL	IMBLD
+	LD	A,0F7H		;data crc
+	LD	(HL),A
+	INC	HL
+	RET
+;
+;	Special id mark loader
+;
+MRKCHK: LD	A,E
+	OR	A
+	RET	M
+	LD	A,0F5H		;put in 3 0f5h's if fill char
+	LD	B,03H		;is dd
+;
+;	Data block loader
+;
+IMBLD:	LD	(HL),A		;fill with a
+	INC	HL
+	DJNZ	IMBLD		;b times
+	RET
+;
+;	Track image controller routine
+;
+TRCKIM: EXX
+	LD	B,(IX+NSCTRS)	;bc' = # of sectors
+	DEC	B
+	EXX
+	LD	DE,(TADDR)	;de->start of image buf
+	PUSH	HL		;hl->1st byte of 2nd sector
+	OR	A		;clear cy flag
+	LD	C,(IX+HEADR)	;skip header in repeat fills
+	LD	B,0
+	EX	DE,HL
+	ADD	HL,BC		;hl->post data gap
+	EX	DE,HL		;to de
+	SBC	HL,DE		;hl = # of bytes/sector
+	PUSH	HL
+	POP	BC		;to bc
+	POP	HL
+	PUSH	BC
+	EX	DE,HL		;current buffer location to de
+	EXX			;post data gap start in hl
+BLDTRK: EXX
+	LDIR			;build a sector 
+	POP	BC		;recall # of bytes/sector
+	PUSH	BC
+	EXX
+	DJNZ	BLDTRK		;b' # of sectors-1
+	EXX
+	POP	BC
+	EX	DE,HL
+	LD	A,(UNIT)
+	BIT	4,A		;test sided bit
+	LD	A,80H		;setup for ds
+	JR	NZ,TRCKDN
+	XOR	A		;setup for ss
+TRCKDN: LD	L,A		;put side info into hl
+	LD	H,L
+	RET
+;
+;	Sector id controller routine
+;
+SETID:	PUSH	HL
+	PUSH	BC
+	EXX
+	POP	BC		;# of bytes/sector ->bc'
+	POP	HL		;side #/ds status ->hl'
+	PUSH	DE
+	POP	IY		;move sector id addr ->iy
+	PUSH	DE
+	EX	AF,AF' 
+	LD	D,01H
+	LD	A,(IX+NSCTRS)	;a' = # of sectors
+	CP	1AH		;if 26 sectors, standard
+	LD	A,01H		;format is used
+	JR	Z,ID1
+	LD	A,(IX+NSCTRS)	;if not alternate sector number
+	SRL	A		;if even # of sectors, sctr 1 is 1st
+	INC	A		;if odd, (nsctrs/2)+1 is 1st
+	JR	NC,ID2
+ID1:	EX	AF,AF'
+	LD	(IY),A		;set track number
+	OR	L
+	JP	P,ID1A
+	LD	(IY+1),H	;set side number
+	RES	7,A
+ID1A:	EX	AF,AF'
+	LD	(IY+2),A	;set sector number
+	PUSH	AF
+	LD	A,(UNIT)
+	RLCA			;check 256 byte bit
+	JR	NC,ID4
+	LD	A,01H		;use 256 byte code
+	LD	(IY+3),A	;in sector length
+ID4:	POP	AF
+	CP	(IX+NSCTRS)	;all sectors done?
+	JR	Z,ID3
+	ADD	IY,BC		;if not index into next sector
+	INC	A		;and write next id field
+ID2:	LD	E,A
+	LD	A,1AH
+	CP	(IX+NSCTRS)	;standard format?
+	LD	A,E
+	JR	Z,ID1		;if so, sectors are sequential
+	LD	A,D		;else alternate then
+	LD	D,E
+	JR	ID1
+;
+ID3:	EX	AF,AF'
+	POP	DE
+	EXX
+	RET
+;
+;	Disk format write controller
+;
+FMAT1:	PUSH	DE		;save loc of fill char
+	PUSH	BC		;save # of bytes/sector
+	EXX
+	EX	AF,AF'
+	POP	BC		;to bc'
+	PUSH	DE
+	LD	E,A		;e' = # of sectors/track
+	LD	D,C		;d' = # of bytes/sector
+	LD	B,(IX+HEADR)
+	LD	C,DATA		;set port number
+	LD	HL,(TADDR)
+	LD	A,80H		;set for ready bit
+	LD	(ERMASK),A
+	CALL	SWEB		;enable wait states
+	LD	A,(UNIT)
+	RLCA			;test for 256 byte
+	LD	A,00H		;128 byte code
+	JR	NC,FMAT3
+	LD	A,01H		;256 byte code
+FMAT3:	LD	(TEMP1),A
+	LD	A,WRTCMD	;set command
+	LD	(CMDSV),A
+	DI
+	OUT	(CMD),A 	;send it
+	LD	A,(TEMP1)
+	OTIR			;output header
+	LD	B,D		;load data ctr for 1st sector
+FMAT5:	OTIR	
+	OR	A
+	JR	Z,FMAT4
+	OTIR			;if 256 bytes output another
+FMAT4:	LD	B,D		;reload data ctr for nxt sector
+	DEC	E		;less one sector
+	JR	NZ,FMAT5
+	POP	DE
+	POP	HL		;point hl to fill char
+	LD	A,(HL)		;put fill char in a
+FMTOUT: OUT	(C),A		;gap4 = fill char to index mark
+	DJNZ	FMTOUT
+	EI			;finish
+	EXX
+	EX	AF,AF'
+	RET
+;
+;	Side select
+;
+SIDECK: EX	DE,HL
+	LD	A,(UNIT)	;get disk type byte
+	BIT	4,A		;test ds bit
+	LD	A,80H		;ds flag
+	JR	NZ,SCHK1
+	XOR	A		;ss flag
+SCHK1:	LD	L,A		;set l as flag reg
+	LD	H,L		;h=side #,+side flag
+	RET
+;
+;	Determines whether to increment the track
+;	number or change sides
+;
+NXTRK:	EX	AF,AF'
+	LD	A,2FH		;delay for track change
+DEL1:	DJNZ	DEL1
+	DEC	A
+	JR	NZ,DEL1
+	IN	A,(SELECT)	;get hardware select
+	OR	80H		;turn off wait logic
+	BIT	7,L		;check side bit
+	JR	Z,INCTRK	;skip side chg if ss
+	BIT	0,H		;check side
+	RES	0,H		;default to side 0
+	JR	NZ,INCTRK	;if previous side = 1, inc trk
+	INC	H		;else set to side 1
+	RES	4,A		;(neg) set to side 1 for
+	OUT	(SELECT),A	;hardware store
+DEL2:	DJNZ	DEL2
+	EX	AF,AF'
+	CP	A
+	RET
+;
+INCTRK: SET	4,A		;reset to side 0
+	OUT	(SELECT),A
+	EX	AF,AF'          ;get track #
+	INC	A		;and bump
+	CP	(IX+NTRKS)	;last track?
+	RET	Z		;if so, then done
+	LD	(TRK),A 	;save updated track #
+	PUSH	HL		;save error return
+	LD	(SPSV),SP
+	POP	HL
+INCTDL: DJNZ	INCTDL		;side change delay
+	EXX
+	EX	DE,HL
+	LD	A,(IX+SKNCMD)	;no verify seek
+	CALL	SEEK2
+	EX	DE,HL
+	EXX
+	IN	A,(TRACK)	;get current track
+	LD	B,A
+	LD	A,(TRK) 	;get desired track
+	CP	B		;test for the same
+	LD	B,00H		;reset b
+	RET
+;
+;	Force drive setup
+;
+UNITFX: LD	A,0FFH		;set old <> new
+	LD	(UNITCK),A
+	RET
+;
+
+EBIOS	EQU	$
+;
+	DEFS	DEXEC-EBIOS+1		;set to fill
+;
+;	Drive evaluation exec
+;
+	ORG	CBOOT+600H
+;
+DEXEC:	LD	SP,COLD
+	LD	HL,MSG1
+	CALL	PTXT		;'Enter request #, drive #'
+	CALL	SCAN
+	JR	NZ,INERR
+	LD	A,L
+	LD	(UNIT),A
+	LD	A,H
+	LD	(RQST),A
+	CALL	HME		;setup table addr
+	LD	IX,(IXSAV)
+	LD	A,(RQST)
+	CALL	DECODE		;decode and execute command
+	CALL	HME
+	LD	HL,MSG3
+	CALL	PTXT		;task complete
+	JR	DEXEC
+;
+INERR:	LD	C,3FH
+	CALL	CONOUT
+	CALL	CRLF
+	JR	DEXEC
+;
+PTXT:	CALL	CHKMON
+	JP	NZ,PTXTR
+	JP	PTXTV
+;
+SCAN:	CALL	CHKMON
+	JP	NZ,SCANR
+	JP	SCANV
+;
+PACC:	CALL	CHKMON
+	JP	NZ,PACCR
+	JP	PACCV
+;
+CHKMON: LD	B,A
+	LD	A,(0E028H)
+	CP	01H
+	LD	A,B
+	RET
+;
+MSG1:	DB	'Test#Drv# (TTDD): '
+	DB	03H
+MSG3:	DB	0AH,0DH
+	DB	'Task done'
+	DB	0DH,0AH,03H
+;
+;	Decode request and execute it
+;
+DECODE: CP	00H
+	JP	Z,TSTSK 	;seek test
+	CP	05H
+	JR	Z,FORMAT
+	JR	C,DIAG
+	CP	0FFH
+	RET	NZ
+	LD	HL,MSG2
+	CALL	PTXT
+	CALL	SCAN
+	JP	(HL)
+;
+MSG2:	DB	'Address: '
+	DB	03H
+;
+;
+FORMAT: CALL	FMATE
+	RET
+;
+;	Error print routine
+;
+ERROR:	LD	HL,ERMSG
+	CALL	PTXT		;'Disk error...'
+	LD	A,(CMDSV)
+	CALL	PACSPC		;print command
+	LD	A,(ERSTAT)
+	CALL	PACSPC		;print status
+	LD	A,(UNIT)
+	CALL	PACSPC		;unit number
+	LD	A,(TRK)
+	CALL	PACSPC
+	LD	A,(SCTR)
+	CALL	PACC
+CRLF:	CALL	CHKMON
+	JP	NZ,CRLFR
+	JP	CRLFV
+
+ERMSG:	DB	'Cmd Stat Drv Trk Sctr> '
+	DB	03H
+;
+;	Read/write diagnostics
+;	Continues until a '.' is entered
+;
+DIAG:	XOR	A
+	LD	(TRK),A
+	INC	A
+	LD	(SCTR),A
+	JR	DIAG1
+DIA10:	LD	HL,BFFR1
+	LD	(TADDR),HL
+	CALL	WRE
+	CALL	NZ,ERROR
+DIA11:	LD	HL,BFFR2
+	LD	(TADDR),HL
+	CALL	RDE
+	CALL	NZ,ERROR
+	LD	A,(RQST)
+	CP	02H
+	JR	Z,DIAG3
+	PUSH	AF
+	CALL	COMPR
+	POP	AF
+	CP	03H
+	JP	Z,RINCR
+	CP	04H
+	JP	Z,DINCR
+DIAG3:	LD	HL,SCTR 	;inc sector
+	INC	(HL)
+	LD	A,(IX+NSCTRS)
+	PUSH	HL
+	LD	HL,UNIT
+	BIT	4,(HL)		;test sides
+	POP	HL
+	JR	Z,SS1		;skip if ss
+	RLCA			;else double # of sectors
+SS1:	INC	A		;and add 1
+	CP	(HL)		;test for end of trk
+	JR	NZ,DIAG1
+	LD	(HL),01H	;if there set to sector 1
+	INC	HL		;point to trk
+	INC	(HL)		;inc trk #
+	LD	A,(IX+NTRKS)
+	CP	(HL)
+	JR	NZ,DIAG1
+	LD	(HL),00H	;set to trk 0
+	LD	C,50H
+	CALL	CONOUT		;'P' for complete test
+DIAG1:	CALL	CONST
+	JR	Z,DIAG2
+	CALL	CONIN
+	CP	2EH
+	RET	Z
+DIAG2:	LD	A,(RQST)
+	CP	02H
+	JR	Z,DIA11
+	JR	DIA10
+;
+COMPR:	LD	HL,BFFR2
+	EX	DE,HL
+	LD	HL,BFFR1
+	LD	A,(UNIT)
+	RLCA			;test 256 byte bit
+	LD	B,80H		;128 bytes
+	JR	NC,CMPR1
+	LD	B,00H		;256 bytes
+CMPR1:	LD	A,(DE)
+	CP	(HL)
+	LD	A,0FFH
+	LD	(ERSTAT),A
+	JP	NZ,ERROR
+	INC	HL
+	INC	DE
+	DJNZ	CMPR1
+INCRD:	LD	HL,0038H
+	LD	DE,BFFR1
+	LD	B,40H
+	LD	A,(UNIT)
+	RLCA	
+	JR	C,IR1
+	SLA	B		;double # of bytes
+IR1:	LD	A,(HL)
+	RRCA
+	JR	C,HERE
+	INC	DE
+HERE:	LD	A,R
+	LD	(DE),A
+	INC	DE
+	INC	DE
+	DJNZ	HERE
+	LD	A,(HL)
+	RRCA	
+	JR	C,SKIP
+	INC	A
+	LD	(HL),A
+	RET
+;
+SKIP:	XOR	A
+	LD	(HL),A
+	RET
+;
+DINCR:	PUSH	HL
+	LD	HL,UNIT
+	LD	A,(HL)
+	AND	0F0H		;strip drive type bits
+	LD	(HL),A		;save
+	LD	A,R		;get random number
+	NOP
+	AND	01H		;strip drive bit
+	OR	(HL)		;set random unit
+	LD	(HL),A
+	POP	HL
+RINCR:	LD	A,(IX+NSCTRS)
+	INC	A
+	LD	B,A
+	LD	A,R
+	AND	1FH
+	OR	A
+	JR	Z,RINCR 	;sector 0 illegal
+	LD	(SCTR),A
+	CP	B
+	JR	NC,RINCR	;if #>nsctrs, try again
+ONCM:	LD	A,(IX+NTRKS)
+	LD	B,A
+	LD	A,R
+	AND	7FH
+	LD	(TRK),A
+	CP	B
+	JR	NC,ONCM 	;if #>ntrks, try again
+	JP	DIAG1
+;
+TSTSK:	CALL	HME
+	LD	A,(IX+NTRKS)
+	DEC	A
+	OUT	(DATA),A
+	LD	A,(IX+SKNCMD)	;seek w/no verify
+	OUT	(CMD),A
+	CALL	CONST
+	JR	Z,TSTSK
+	CALL	CONIN
+	CP	2EH
+	RET	Z
+	JR	TSTSK
+;
+PACSPC: CALL	PACC
+	LD	C,20H
+	JP	CONOUT
+;
+	END

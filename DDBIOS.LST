@@ -1,0 +1,1365 @@
+Z80ASM SuperFast Relocating Macro Assembler     	    Z80ASM 1.30 Page   1
+DDBIOS  Z80
+
+    1                   ;
+    2                   ;	DDBIOS as shown in the documentation listings
+    3                   ;	This is matching code section and does include
+    4                   ;	the diagnostics and format routines.
+    5                   ;
+    6                   ;	Version 2.00 as of 09/09/91 06:18 pm
+    7                   ;
+    8                   ;	General address equates
+    9                   ;
+   10         0003      IOBYTE	EQU	03H
+   11         0004      CDISK	EQU	04H
+   12         0039      RQST	EQU	39H	;request
+   13         0040      TADDR	EQU	40H	;transfer address
+   14         0040      T	EQU	TADDR
+   15         0042      UNIT	EQU	T+02H	;new unit byte
+   16         0043      SCTR	EQU	T+03H	;sector
+   17         0044      TRK	EQU	T+04H	;track
+   18         0045      NREC	EQU	T+05H	;# of sectors
+   19         0046      ERMASK	EQU	T+06H	;error mask
+   20         0047      ERSTAT	EQU	T+07H	;error flag store
+   21         0048      IDSV	EQU	T+08H	;4 bytes (used for track id command)
+   22         0049      SIDE	EQU	T+09H	;id side byte
+   23         004C      CMDSV	EQU	T+0CH	;command save
+   24         004D      SPSV	EQU	T+0DH	;sp save
+   25         0050      TEMP1	EQU	T+10H	;1 byte temp reg
+   26         0051      TEMP2	EQU	T+11H	;2 byte temp reg
+   27         0053      IXSAV	EQU	T+13H	;sectors/track store
+   28         0055      UNITCK	EQU	T+15H	;old unit byte
+   29         0056      RSEEK	EQU	T+16H	;# of reseeks
+   30         0057      RTRY	EQU	T+17H	;# of retrys
+   31         0058      ADRIVE	EQU	T+18H	;store of A: drive density type
+   32         0059      BDRIVE	EQU	T+19H	;store of B: drive type
+   33         005A      CBFLAG	EQU	T+1AH	;flag to indicate wboot or cboot for loader on disk
+   34         0080      SSTACK	EQU	80H	;system stack
+   35         0080      COLD	EQU	80H	;cold start address
+   36         0800      BFFR1	EQU   0800H	;for test/format
+   37         0900      BFFR2	EQU   0900H
+   38         1000      FBUFF	EQU   1000H	;format buffer for image
+   39                   ;
+   40                   ;	Ports used by disk controller
+   41                   ;
+   42         0060      X	EQU	60H	;ports for 1791
+   43         0060      RSET	EQU	X+0	;controller reset address
+   44         0063      SELECT	EQU	X+3	;drive select port
+   45         0064      STATUS	EQU	X+4	;status port
+   46         0065      TRACK	EQU	X+5	;track port
+   47         0066      SECTOR	EQU	X+6	;sector port
+   48         0067      DATA	EQU	X+7	;data port
+   49         0064      CMD	EQU	X+4	;command port
+   50                   ;
+   51                   ;	Disk codes for controller
+   52                   ;
+   53         00D0      FINT	EQU	0D0H	;force interrupt
+   54         0088      RDCMD	EQU	088H	;read command
+   55         00C4      RDACMD	EQU	0C4H	;read address command
+   56         00A8      WRCMD	EQU	0A8H	;write command
+   57         00F4      WRTCMD	EQU	0F4H	;write track command
+   58                   ;
+Z80ASM SuperFast Relocating Macro Assembler     	    Z80ASM 1.30 Page   2
+DDBIOS  Z80
+
+   59                   ;	General equates
+   60                   ;
+   61         0080      NBYTES	EQU	128		;one sector's worth
+   62         0003      MHZ	EQU	3		;round(CLOCK SPEED)
+   63         001D      MS32	EQU	(96*MHZ+8)/10	;time for 32 ms delay
+   64         002D      MS50	EQU	(150*MHZ+8)/10	;time for 50 ms delay
+   65         004B      MS83	EQU	(250*MHZ+8)/10	;time for 83 ms delay
+   66                   ;
+   67                   ;	Addresses used by this bios
+   68                   ;
+   69         E006      CSE	EQU	0e006h		;monitor const
+   70         E009      CIE	EQU	0e009h		;monitor conin
+   71         E00C      COE	EQU	0e00ch		;monitor conout
+   72                   ;
+   73         E800      COBSYS	EQU	0e800h		;CO system rom
+   74         E803      COBSY1	EQU	0e803h		;CO system rom 1
+   75         E002      MNITR	EQU	0e002h		;cold boot of monitor entry
+   76         E003      MONITR	EQU	0e003h		;warm boot entry
+   77                   ;
+   78                   ;	Hooks into monitor - have to determine version
+   79                   ;
+   80         E741      PTXTR	EQU	0e741h
+   81         E707      PTXTV	EQU	0e707h
+   82         E79A      SCANR	EQU	0e79ah
+   83         E760      SCANV	EQU	0e760h
+   84         E74D      PACCR	EQU	0e74dh
+   85         E713      PACCV	EQU	0e713h
+   86         E72F      CRLFR	EQU	0e72fh
+   87         E6F5      CRLFV	EQU	0e6f5h
+   88                   ;
+   89                   	ASEG
+   90         F000      	ORG	0F000H
+   91                   ;
+   92 F000  00          CBOOT:	NOP			;cold boot
+   93 F001  1E F5       	LD	E,0F5H
+   94 F003  C3 F06C     WBOOTE: JP	BOOT		;warm boot
+   95 F006  C3 E006     CONST:	JP	CSE		;console status
+   96 F009  C3 E009     CONIN:	JP	CIE		;console input
+   97 F00C  C3 E00C     CONOUT: JP	COE		;console output
+   98 F00F  C3 F10A     DTYPE:	JP	UNITSL		;setup unit byte
+   99                   ;
+  100 F012  00          	NOP			;*** punch char out
+  101 F013  00          	NOP
+  102 F014  00          	NOP
+  103 F015  00          	NOP			;*** reader char in
+  104 F016  00          	NOP
+  105 F017  00          	NOP
+  106 F018  C3 F159     HME:	JP	HOME		;move head to home
+  107 F01B  C3 F168     SDSKE:	JP	SELDSK		;select disk
+  108 F01E  C3 F16D     STRKE:	JP	SETTRK		;set track number
+  109 F021  C3 F172     SSECE:	JP	SETSEC		;set sector number
+  110 F024  C3 F177     SDMAE:	JP	SETDMA		;set dma address
+  111 F027  C3 F17C     RDE:	JP	READ		;read sector
+  112 F02A  C3 F198     WRE:	JP	WRITE		;write sector
+  113 F02D  C3 F39A     LDE:	JP	LOADER		;*** list status
+  114 F030  C3 F3A7     SVE:	JP	SAVER		;*** sector translate
+  115 F033  C3 F3EB     FMATE:	JP	FMAT		;format disk
+  116                   ;
+Z80ASM SuperFast Relocating Macro Assembler     	    Z80ASM 1.30 Page   3
+DDBIOS  Z80
+
+  117                   ;	Tables which contain disk definitions
+  118                   ;
+  119                   ;	Equates for the ix register offset into the
+  120                   ;	below format tables
+  121                   ;
+  122         0000      nsctrs	equ	0
+  123         0001      ntrks	equ	1
+  124         0002      headr	equ	2
+  125         0003      gap1	equ	3
+  126         0004      gap2	equ	4
+  127         0005      gap3	equ	5
+  128         0006      rscmd	equ	6
+  129         0007      skncmd	equ	7
+  130         0008      skcmd	equ	8
+  131                   ;
+  132         F03F      	ORG	CBOOT+3FH
+  133                   ;
+  134 F03F  1A          STDSDT: DB	1ah			;sectors per track
+  135 F040  4D          	DB	4dh			;tracks per side
+  136 F041  49          	DB	49h			;index header gap
+  137 F042  06 0B 1B    	DB	06h,0bh,1bh		;gaps 1, 2, 3
+  138 F045  08          	DB	08h			;restore cmd
+  139 F046  18          	DB	18h			;seek w/no verify cmd
+  140 F047  1C          	DB	1ch			;seek w/verify cmd
+  141 F048  32          STDDDT: DB	32h			;sectors per track
+  142 F049  4D          	DB	4dh			;tracks per side
+  143 F04A  54          	DB	54h			;index header gap
+  144 F04B  08 16 10    	DB	08h,16h,10h		;gaps 1, 2, 3
+  145 F04E  08          	DB	08h			;restore cmd
+  146 F04F  18          	DB	18h			;seek w/no verify cmd
+  147 F050  1C          	DB	1ch			;seek w/verify cmd
+  148 F051  1A          DDT256: DB	1ah			;sectors per track
+  149 F052  4D          	DB	4dh			;tracks per side
+  150 F053  2E          	DB	2eh			;index header gap
+  151 F054  08 16 36    	DB	08h,16h,36h		;gaps 1, 2, 3
+  152 F057  08          	DB	08h
+  153 F058  18          	DB	18h			;seek w/no verify cmd
+  154 F059  1C          	DB	1ch			;seek w/verify cmd
+  155 F05A  12          MINSDT: DB	12h			;sectors per track
+  156 F05B  23          	DB	23h			;tracks per side
+  157 F05C  0C          	DB	0ch			;index header gap
+  158 F05D  06 0B 08    	DB	06h,0bh,08h		;gaps 1, 2, 3
+  159 F060  0B          	DB	0bh
+  160 F061  1B          	DB	1bh			;seek w/no verify cmd
+  161 F062  1F          	DB	1fh			;seek w/verify cmd
+  162 F063  1D          MINDDT: DB	1dh			;sectors per track
+  163 F064  23          	DB	23h			;tracks per side
+  164 F065  54          	DB	54h			;index header gap
+  165 F066  08 16 10    	DB	08h,16h,10h		;gaps 1, 2, 3
+  166 F069  0B          	DB	0bh
+  167 F06A  1B          	DB	1bh			;seek w/no verify cmd
+  168 F06B  1F          	DB	1fh			;seek w/verify cmd
+  169                   ;
+  170                   ;	Start the system
+  171                   ;
+  172 F06C  31 0080     BOOT:	LD	SP,COLD 	;set the stack
+  173 F06F  DB 7F       	IN	A,(7FH)
+  174 F071  3E EF       	LD	A,0EFH		;pattern for select of each drive
+Z80ASM SuperFast Relocating Macro Assembler     	    Z80ASM 1.30 Page   4
+DDBIOS  Z80
+
+  175 F073  E5          	PUSH	HL
+  176 F074  ED 73 004D  	LD	(SPSV),SP	;save present stack
+  177 F078  E1          	POP	HL
+  178 F079  0F          BT1:	RRCA			;shift pattern towards bit 0
+  179 F07A  30 1A       	JR	NC,BT2
+  180 F07C  D3 63       	OUT	(SELECT),A	;send pattern
+  181 F07E  CD F38E     	CALL	FRCINT		;force an interrupt
+  182 F081  E6 04       	AND	4		;check status for home
+  183 F083  28 0D       	JR	Z,BT3
+  184 F085  AF          	XOR	A
+  185 F086  D3 65       	OUT	(TRACK),A	;set track to 0
+  186 F088  3E 02       	LD	A,02H
+  187 F08A  32 0044     	LD	(TRK),A 	;set bios track to 2
+  188 F08D  3E 1A       	LD	A,1AH
+  189 F08F  CD F2E1     	CALL	SEEK4		;seek track in TRK
+  190 F092  DB 63       BT3:	IN	A,(SELECT)	;read back pattern
+  191 F094  18 E3       	JR	BT1		;and loop to next
+  192                   ;
+  193 F096  AF          BT2:	XOR	A
+  194 F097  CD F10A     	CALL	UNITSL		;check diskette type
+  195 F09A  20 19       	JR	NZ,GOMON	;if any problems
+  196 F09C  CD F0BF     BT4:	CALL	BOOTLD		;else read in the boot sector
+  197 F09F  21 0080     	LD	HL,COLD
+  198 F0A2  7E          	LD	A,(HL)
+  199 F0A3  E6 CE       	AND	0CEH		;see if cp/m or sdos
+  200 F0A5  20 05       	JR	NZ,BT5		;brif so
+  201 F0A7  CB 46       	BIT	0,(HL)		;else see if low bit set
+  202 F0A9  C2 0080     	JP	NZ,COLD 	;if so then goto loader
+  203 F0AC  3E C3       BT5:	LD	A,0C3H		;check for cap software
+  204 F0AE  21 E800     	LD	HL,COBSYS
+  205 F0B1  BE          	CP	(HL)
+  206 F0B2  CA E803     	JP	Z,COBSY1
+  207 F0B5  3E E0       GOMON:	LD	A,0E0H		;if loader didn't make it
+  208 F0B7  21 E002     	LD	HL,MNITR	;see if monitor is there
+  209 F0BA  BE          	CP	(HL)
+  210 F0BB  CA E003     	JP	Z,MONITR	;if it is then goto it
+  211 F0BE  76          	HALT			;else die here!
+  212 F0BF  21 0080     BOOTLD: LD	HL,COLD 	;setup load address
+  213 F0C2  22 0040     	LD	(TADDR),HL
+  214 F0C5  AF          	XOR	A		;Track 0, Sector 1
+  215 F0C6  32 0044     	LD	(TRK),A
+  216 F0C9  3C          	INC	A
+  217 F0CA  32 0043     	LD	(SCTR),A
+  218 F0CD  CD F17C     	CALL	READ		;read it into buffer
+  219 F0D0  C8          	RET	Z		;if read ok then back to caller
+  220 F0D1  18 E2       	JR	GOMON		;else test for monitor
+  221                   ;
+  222 F0D3  3A 0042     CHGTYP: LD	A,(UNIT)
+  223 F0D6  5F          	LD	E,A		;unit type to e
+  224 F0D7  3E 04       	LD	A,04		;check for drive type
+  225 F0D9  B8          	CP	B
+  226 F0DA  28 19       	JR	Z,DD8256	;set 8" dd 256 byte
+  227 F0DC  3D          	DEC	A
+  228 F0DD  B8          	CP	B
+  229 F0DE  28 0C       	JR	Z,SD8		;set 8" sd 128 byte
+  230 F0E0  3D          	DEC	A
+  231 F0E1  B8          	CP	B
+  232 F0E2  28 18       	JR	Z,SD5		;set 5" sd 128 byte
+Z80ASM SuperFast Relocating Macro Assembler     	    Z80ASM 1.30 Page   5
+DDBIOS  Z80
+
+  233 F0E4  3D          	DEC	A
+  234 F0E5  B8          	CP	B
+  235 F0E6  28 1B       	JR	Z,DD5		;set 5" dd 128 byte
+  236 F0E8  F6 01       	OR	01H
+  237 F0EA  E1          	POP	HL
+  238 F0EB  C9          	RET
+  239                   ;
+  240                   ;	Set to single density, 128 byte 8"
+  241                   ;
+  242 F0EC  7B          SD8:	LD	A,E		;recall unit type
+  243 F0ED  CB B7       	RES	6,A		;reset double density
+  244 F0EF  CB BF       	RES	7,A		;reset 256 byte
+  245 F0F1  32 0042     	LD	(UNIT),A
+  246 F0F4  C9          	RET
+  247                   ;
+  248                   ;	Set to 256 byte 8"
+  249                   ;
+  250 F0F5  7B          DD8256: LD	A,E
+  251 F0F6  CB FF       	SET	7,A		;set 256 byte cntrl
+  252 F0F8  32 0042     	LD	(UNIT),A
+  253 F0FB  C9          	RET
+  254                   ;
+  255                   ;	Set to 5 1/4" drive
+  256                   ;
+  257 F0FC  7B          SD5:	LD	A,E
+  258 F0FD  CB EF       	SET	5,A		;set 5" select bit
+  259 F0FF  32 0042     	LD	(UNIT),A
+  260 F102  C9          	RET
+  261                   ;
+  262                   ;	Set to double density
+  263                   ;
+  264 F103  7B          DD5:	LD	A,E
+  265 F104  CB F7       	SET	6,A		;set double density
+  266 F106  32 0042     	LD	(UNIT),A
+  267 F109  C9          	RET
+  268                   ;
+  269                   ;	Sets up the unit byte for system use
+  270                   ;	to install new diskettes or drives
+  271                   ;
+  272 F10A  06 04       UNITSL: LD	B,04H		;set counter for unit
+  273 F10C  E6 0F       	AND	0FH		;strip drive select
+  274 F10E  F6 40       	OR	40H		;default to 8" dd
+  275 F110  32 0042     	LD	(UNIT),A	;save unit number
+  276 F113  2A 0040     	LD	HL,(TADDR)	;save transfer address
+  277 F116  22 0051     	LD	(TEMP2),HL
+  278 F119  CD F13C     	CALL	USL1		;set unit byte bits
+  279 F11C  2A 0051     	LD	HL,(TEMP2)	;recall transfer address
+  280 F11F  22 0040     	LD	(TADDR),HL
+  281 F122  3A 0042     	LD	A,(UNIT)	;get unit type
+  282 F125  C0          	RET	NZ		;back if error flag set
+  283 F126  30 02       	JR	NC,USL0
+  284 F128  CB FF       	SET	7,A		;set wait state bit
+  285 F12A  5F          USL0:	LD	E,A
+  286 F12B  3A 0049     	LD	A,(SIDE)	;check double side bit
+  287 F12E  B7          	OR	A
+  288 F12F  7B          	LD	A,E		;recall unit type data
+  289 F130  CB A7       	RES	4,A		;setup for single sided
+  290 F132  F2 F137     	JP	P,SS
+Z80ASM SuperFast Relocating Macro Assembler     	    Z80ASM 1.30 Page   6
+DDBIOS  Z80
+
+  291 F135  CB E7       	SET	4,A		;switch to double sided
+  292 F137  32 0042     SS:	LD	(UNIT),A	;save the updated unit type
+  293 F13A  AF          	XOR	A		;clear z flag
+  294 F13B  C9          	RET
+  295                   ;
+  296 F13C  C5          USL1:	PUSH	BC		;save work regs
+  297 F13D  DD E5       	PUSH	IX
+  298 F13F  E5          	PUSH	HL
+  299 F140  ED 73 004D  	LD	(SPSV),SP	;save this stack pointer
+  300 F144  E1          	POP	HL
+  301 F145  CD F1D3     	CALL	DRVSET		;set the drive
+  302 F148  CD F226     	CALL	IDRD		;read the track id
+  303 F14B  DD E1       	POP	IX
+  304 F14D  C1          	POP	BC
+  305 F14E  3A 004B     	LD	A,(IDSV+3)	;grab the sector length code
+  306 F151  0F          	RRCA			;see if 256
+  307 F152  C8          	RET	Z		;brif not
+  308 F153  05          	DEC	B		;else decrement unit ctr
+  309 F154  CD F0D3     	CALL	CHGTYP		;and change drive type
+  310 F157  18 E3       	JR	USL1		;loop back again
+  311                   ;
+  312                   ;	Home the drive
+  313                   ;
+  314 F159  ED 73 004D  HOME:	LD	(SPSV),SP
+  315 F15D  DD E5       	PUSH	IX
+  316 F15F  CD F1D3     	CALL	DRVSET		;select drive
+  317 F162  CD F1C7     	CALL	HOME1		;restore it
+  318 F165  DD E1       	POP	IX
+  319 F167  C9          	RET
+  320                   ;
+  321                   ;	Select disk
+  322                   ;
+  323 F168  79          SELDSK: LD	A,C
+  324 F169  32 0042     	LD	(UNIT),A
+  325 F16C  C9          	RET
+  326                   ;
+  327                   ;	Set track
+  328                   ;
+  329 F16D  79          SETTRK: LD	A,C
+  330 F16E  32 0044     	LD	(TRK),A
+  331 F171  C9          	RET
+  332                   ;
+  333                   ;	Set sector
+  334                   ;
+  335 F172  79          SETSEC: LD	A,C
+  336 F173  32 0043     	LD	(SCTR),A
+  337 F176  C9          	RET
+  338                   ;
+  339                   ;	Set dma address
+  340                   ;
+  341 F177  ED 43 0040  SETDMA: LD	(TADDR),BC
+  342 F17B  C9          	RET
+  343                   ;
+  344                   ;	Read a sector
+  345                   ;
+  346 F17C  01 0301     READ:	LD	BC,0301H
+  347 F17F  ED 43 0056  	LD	(RSEEK),BC	;save reseeks and retries
+  348 F183  DD E5       	PUSH	IX
+Z80ASM SuperFast Relocating Macro Assembler     	    Z80ASM 1.30 Page   7
+DDBIOS  Z80
+
+  349 F185  DD 2A 0053  	LD	IX,(IXSAV)
+  350 F189  C5          READ1:	PUSH	BC
+  351 F18A  CD F25B     	CALL	RDSC		;read a sector
+  352 F18D  C1          	POP	BC
+  353 F18E  28 05       	JR	Z,RWRET 	;if ok then finish
+  354 F190  CD F1B1     	CALL	RETRY		;else retry if error
+  355 F193  18 F4       	JR	READ1
+  356                   ;
+  357                   ;	Common read/write return
+  358                   ;
+  359 F195  DD E1       RWRET:	POP	IX
+  360 F197  C9          	RET
+  361                   ;
+  362                   ;	Write a sector
+  363                   ;
+  364 F198  01 0301     WRITE:	LD	BC,0301H
+  365 F19B  ED 43 0056  	LD	(RSEEK),BC	;save reseeks and retries
+  366 F19F  DD E5       	PUSH	IX
+  367 F1A1  DD 2A 0053  	LD	IX,(IXSAV)
+  368 F1A5  C5          WRITE1: PUSH	BC
+  369 F1A6  CD F29A     	CALL	WRSC		;write a sector
+  370 F1A9  C1          	POP	BC
+  371 F1AA  28 E9       	JR	Z,RWRET
+  372 F1AC  CD F1B1     	CALL	RETRY		;if error then retry
+  373 F1AF  18 F4       	JR	WRITE1
+  374                   ;
+  375                   ;	Read/write retry handler
+  376                   ;
+  377 F1B1  10 13       RETRY:	DJNZ	RETRY2		;do (b) retries without reseeks
+  378 F1B3  3A 0057     	LD	A,(RTRY)
+  379 F1B6  47          	LD	B,A
+  380 F1B7  0D          	DEC	C
+  381 F1B8  F2 F1C1     	JP	P,RETRY1	;do (c) reseeks
+  382 F1BB  F1          	POP	AF
+  383 F1BC  DD E1       	POP	IX
+  384 F1BE  AF          	XOR	A
+  385 F1BF  3C          	INC	A		;set error flag
+  386 F1C0  C9          	RET
+  387                   ;
+  388 F1C1  C5          RETRY1: PUSH	BC
+  389 F1C2  CD F1C7     	CALL	HOME1		;restore drive
+  390 F1C5  C1          	POP	BC
+  391 F1C6  C9          RETRY2: RET
+  392                   ;
+  393                   ;	Home the drive after main HOME sets up
+  394                   ;
+  395 F1C7  ED 73 004D  HOME1:	LD	(SPSV),SP
+  396 F1CB  DD 7E 06    	LD	A,(IX+RSCMD)	;restore to track 0
+  397 F1CE  CD F315     	CALL	SEEK2
+  398 F1D1  AF          	XOR	A		;reset error flag
+  399 F1D2  C9          	RET
+  400                   ;
+  401                   ;	Check drive select and change if different
+  402                   ;
+  403 F1D3  11 0042     DRVSET: LD	DE,UNIT
+  404 F1D6  1A          	LD	A,(DE)
+  405 F1D7  E6 E0       	AND	0E0H		;strip drive type bits
+  406 F1D9  4F          	LD	C,A		;put into c
+Z80ASM SuperFast Relocating Macro Assembler     	    Z80ASM 1.30 Page   8
+DDBIOS  Z80
+
+  407 F1DA  1A          	LD	A,(DE)
+  408 F1DB  E6 03       	AND	03H		;strip drive number
+  409 F1DD  47          	LD	B,A		;put into b
+  410 F1DE  3E 01       	LD	A,01H		;set initial drive position bit
+  411 F1E0  28 03       	JR	Z,DRVSEL	;all set if drive number is 'a:'
+  412 F1E2  07          CKDRV1: RLCA			;else shift into place
+  413 F1E3  10 FD       	DJNZ	CKDRV1
+  414 F1E5  B1          DRVSEL: OR	C		;merge drive type
+  415 F1E6  E6 7F       	AND	7FH		;strip wait state bit
+  416 F1E8  47          	LD	B,A		;put into b
+  417 F1E9  79          	LD	A,C		;now test for drive type table
+  418 F1EA  DD 21 F03F  	LD	IX,STDSDT
+  419 F1EE  FE 00       	CP	00H		;8" sd?
+  420 F1F0  28 1C       	JR	Z,CKDRV
+  421 F1F2  DD 21 F048  	LD	IX,STDDDT
+  422 F1F6  FE 40       	CP	40H		;8" dd?
+  423 F1F8  28 14       	JR	Z,CKDRV
+  424 F1FA  DD 21 F051  	LD	IX,DDT256
+  425 F1FE  FE C0       	CP	0C0H		;8" dd w/256 byte sectors?
+  426 F200  28 0C       	JR	Z,CKDRV
+  427 F202  DD 21 F05A  	LD	IX,MINSDT
+  428 F206  FE 20       	CP	20H		;5" sd?
+  429 F208  28 04       	JR	Z,CKDRV
+  430 F20A  DD 21 F063  	LD	IX,MINDDT	;else is 5" dd
+  431 F20E  DD 22 0053  CKDRV:	LD	(IXSAV),IX
+  432 F212  C5          	PUSH	BC
+  433 F213  F1          	POP	AF		;get select code
+  434 F214  2F          	CPL			;invert for board data buffers
+  435 F215  D3 63       	OUT	(SELECT),A	;send it
+  436 F217  1A          	LD	A,(DE)
+  437 F218  32 0055     	LD	(UNITCK),A	;set old=new
+  438 F21B  CD F248     	CALL	DELAY		;delay for drive select
+  439 F21E  DB 64       RDYCK:	IN	A,(STATUS)
+  440 F220  E6 80       	AND	80H		;test for ready to come back
+  441 F222  C2 F2B8     	JP	NZ,END2 	;if not there then handle
+  442 F225  C9          	RET			;else we are done
+  443                   ;
+  444                   ;	Read the track id
+  445                   ;
+  446 F226  CD F319     IDRD:	CALL	WAIT		;force not busy
+  447 F229  21 0048     	LD	HL,IDSV
+  448 F22C  01 0667     	LD	BC,0667H	;b=# of bytes, c=data port
+  449 F22F  3E F8       	LD	A,0F8H
+  450 F231  32 0046     	LD	(ERMASK),A	;set error mask
+  451 F234  CD F34C     	CALL	SWEB		;enable wait states
+  452 F237  3E C4       	LD	A,RDACMD
+  453 F239  CD F260     	CALL	RDSC0		;read id
+  454 F23C  3A 0048     	LD	A,(IDSV)
+  455 F23F  FE 4D       	CP	4DH		;is track > 76
+  456 F241  D2 F2D5     	JP	NC,SEEK0	;if so then indicate invalid track
+  457 F244  D3 65       	OUT	(TRACK),A	;else set track register
+  458 F246  AF          	XOR	A		;reset error flag
+  459 F247  C9          	RET
+  460                   ;
+  461                   ;	Delays - each count in a takes 256*13*MHZ
+  462                   ;	delay(approx.). User should set MHZ equate
+  463                   ;	at start of file for times.
+  464                   ;
+Z80ASM SuperFast Relocating Macro Assembler     	    Z80ASM 1.30 Page   9
+DDBIOS  Z80
+
+  465 F248  3A 0042     DELAY:	LD	A,(UNIT)
+  466 F24B  CB 6F       	BIT	5,A		;check drive type
+  467 F24D  3E 1D       	LD	A,MS32		;set delay for 32 ms
+  468 F24F  28 F7       	JR	Z,DELAY		;brif 8"
+  469 F251  3E 2D       	LD	A,MS50		;set delay for 50 ms for 5"
+  470 F253  06 00       DELAY1: LD	B,00H
+  471 F255  10 FE       DELAY2: DJNZ	DELAY2		;loop 256 times
+  472 F257  3D          	DEC	A		;then decrement outer loop
+  473 F258  20 F9       	JR	NZ,DELAY1
+  474 F25A  C9          	RET
+  475                   ;
+  476                   ;	Read sector command
+  477                   ;
+  478 F25B  CD F279     RDSC:	CALL	DRINIT
+  479 F25E  3E 88       	LD	A,RDCMD 	;read command
+  480 F260  32 004C     RDSC0:	LD	(CMDSV),A
+  481 F263  ED 5B 004C  	LD	DE,(CMDSV)
+  482 F267  D5          	PUSH	DE
+  483 F268  F3          	DI			;disable ints during read
+  484 F269  D3 64       	OUT	(CMD),A
+  485 F26B  18 00       	JR	RDSCD0		;delay
+  486 F26D  18 00       RDSCD0: JR	RDSCD1
+  487 F26F  ED B2       RDSCD1: INIR			;input data
+  488 F271  D1          	POP	DE
+  489 F272  ED 53 004C  	LD	(CMDSV),DE
+  490 F276  FB          	EI			;ok to reenable
+  491 F277  18 33       	JR	END
+  492                   ;
+  493                   ;	Drive initialization routine
+  494                   ;
+  495 F279  E1          DRINIT: POP	HL
+  496 F27A  ED 73 004D  	LD	(SPSV),SP	;set up error return
+  497 F27E  E5          	PUSH	HL
+  498 F27F  3A 0042     	LD	A,(UNIT)	;get drive select data
+  499 F282  57          	LD	D,A
+  500 F283  3A 0055     	LD	A,(UNITCK)	;get previous drive select
+  501 F286  BA          	CP	D		;same as before?
+  502 F287  28 06       	JR	Z,DINIT1	;if so, skip drvset
+  503 F289  CD F1D3     	CALL	DRVSET
+  504 F28C  CD F226     	CALL	IDRD
+  505 F28F  CD F2C8     DINIT1: CALL	SEEK		;move into place
+  506 F292  3E FE       	LD	A,0FEH
+  507 F294  32 0046     	LD	(ERMASK),A
+  508 F297  C3 F353     	JP	TRINT		;init for disk transfer
+  509                   ;
+  510                   ;	Write sector command
+  511                   ;
+  512 F29A  CD F279     WRSC:	CALL	DRINIT
+  513 F29D  3E A8       	LD	A,0A8H
+  514 F29F  32 004C     	LD	(CMDSV),A
+  515 F2A2  F3          	DI			;no time for interrupts
+  516 F2A3  D3 64       	OUT	(CMD),A
+  517 F2A5  18 00       	JR	WRSCD0		;delay
+  518 F2A7  18 00       WRSCD0: JR	WRSCD1
+  519 F2A9  ED B3       WRSCD1: OTIR
+  520 F2AB  FB          	EI			;now they're ok
+  521                   ;
+  522                   ;	End of command
+Z80ASM SuperFast Relocating Macro Assembler     	    Z80ASM 1.30 Page  10
+DDBIOS  Z80
+
+  523                   ;
+  524 F2AC  CD F319     END:	CALL	WAIT
+  525 F2AF  DB 64       	IN	A,(STATUS)
+  526 F2B1  57          	LD	D,A
+  527 F2B2  3A 0046     	LD	A,(ERMASK)
+  528 F2B5  A2          	AND	D		;check for errors
+  529 F2B6  C8          	RET	Z
+  530 F2B7  7A          	LD	A,D
+  531 F2B8  32 0047     END2:	LD	(ERSTAT),A	;save error bits
+  532 F2BB  CD F248     	CALL	DELAY
+  533 F2BE  F6 01       	OR	01H
+  534 F2C0  ED 7B 004D  	LD	SP,(SPSV)
+  535 F2C4  CD F5DB     	CALL	UNITFX		;force drvset
+  536 F2C7  C9          	RET
+  537                   ;
+  538                   ;	Seek track
+  539                   ;
+  540 F2C8  CD F21E     SEEK:	CALL	RDYCK
+  541 F2CB  DD 7E 01    	LD	A,(IX+NTRKS)
+  542 F2CE  4F          	LD	C,A
+  543 F2CF  3A 0044     	LD	A,(TRK)
+  544 F2D2  B9          	CP	C		;check for valid track
+  545 F2D3  38 04       	JR	C,SEEK1
+  546 F2D5  3E 0F       SEEK0:	LD	A,0FH
+  547 F2D7  18 DF       	JR	END2		;skip - invalid track
+  548                   ;
+  549 F2D9  4F          SEEK1:	LD	C,A		;new track #
+  550 F2DA  DB 65       	IN	A,(TRACK)
+  551 F2DC  B9          	CP	C		;same as present?
+  552 F2DD  C8          	RET	Z		;if same, then done
+  553 F2DE  DD 7E 08    	LD	A,(IX+SKCMD)	;else seek track
+  554 F2E1  32 004C     SEEK4:	LD	(CMDSV),A
+  555 F2E4  06 D2       	LD	B,0D2H
+  556 F2E6  10 FE       SEEK3:	DJNZ	SEEK3		;delay
+  557 F2E8  CD F319     	CALL	WAIT		;wait for not busy
+  558 F2EB  3A 0044     	LD	A,(TRK)
+  559 F2EE  D3 67       	OUT	(DATA),A	;send track to seek
+  560 F2F0  3E 80       	LD	A,80H
+  561 F2F2  32 0046     	LD	(ERMASK),A	;set error mask for not ready
+  562 F2F5  3A 004C     	LD	A,(CMDSV)
+  563 F2F8  D3 64       	OUT	(CMD),A 	;send command
+  564 F2FA  06 0A       	LD	B,0AH
+  565 F2FC  10 FE       SEEK5:	DJNZ	SEEK5		;delay
+  566 F2FE  CD F2AC     	CALL	END		;check for busy
+  567 F301  CD F248     	CALL	DELAY		;then delay a bit
+  568 F304  3A 004C     	LD	A,(CMDSV)
+  569 F307  DD BE 06    	CP	(IX+RSCMD)	;if last command restore
+  570 F30A  C8          	RET	Z		;finish
+  571 F30B  DB 64       	IN	A,(STATUS)
+  572 F30D  E6 10       	AND	10H		;check for seek error
+  573 F30F  20 04       	JR	NZ,SEEK2	;if so set error
+  574 F311  DB 65       	IN	A,(TRACK)
+  575 F313  B9          	CP	C		;test track
+  576 F314  C8          	RET	Z		;if match, seek ok
+  577 F315  3E 20       SEEK2:	LD	A,20H		;track seek error bit
+  578 F317  18 9F       END2JP: JR	END2
+  579                   ;
+  580                   ;	Wait and test busy - generate a FDC
+Z80ASM SuperFast Relocating Macro Assembler     	    Z80ASM 1.30 Page  11
+DDBIOS  Z80
+
+  581                   ;	reset if no response in time
+  582                   ;
+  583 F319  1E F5       WAIT:	LD	E,0F5H		;******
+  584 F31B  C5          	PUSH	BC		;******
+  585 F31C  0E 02       	LD	C,02H		;******
+  586 F31E  DB 64       WAIT2:	IN	A,(STATUS)
+  587 F320  E6 01       	AND	01H		;test busy
+  588 F322  28 20       	JR	Z,DWAIT
+  589 F324  10 F8       	DJNZ	WAIT2		;delay if still busy
+  590 F326  1D          	DEC	E
+  591 F327  20 F5       	JR	NZ,WAIT2
+  592 F329  0D          	DEC	C		;******
+  593 F32A  20 F2       	JR	NZ,WAIT2	;******
+  594 F32C  C1          	POP	BC		;******
+  595 F32D  DB 63       	IN	A,(SELECT)
+  596 F32F  F6 80       	OR	80H		;set /MR latch
+  597 F331  D3 60       	OUT	(RSET),A
+  598 F333  10 FE       WAIT3:	DJNZ	WAIT3		;delay
+  599 F335  DB 60       	IN	A,(RSET)	;reset /MR latch
+  600 F337  CD F38E     	CALL	FRCINT		;kill auto restore
+  601 F33A  DD 7E 06    	LD	A,(IX+RSCMD)	;send restore command
+  602 F33D  CD F315     	CALL	SEEK2
+  603 F340  3E FE       	LD	A,0FEH		;error status
+  604 F342  18 D3       	JR	END2JP		;force retry
+  605                   ;
+  606                   ;	Disable wait states - allow selects to
+  607                   ;	disk controller
+  608                   ;
+  609 F344  C1          DWAIT:	POP	BC
+  610 F345  DB 63       	IN	A,(SELECT)
+  611 F347  F6 80       	OR	80H		;wait en inactive
+  612 F349  D3 63       	OUT	(SELECT),A
+  613 F34B  C9          	RET
+  614                   ;
+  615                   ;	Enable wait states - IRQ or INTRQ needed
+  616                   ;	to release ready
+  617                   ;
+  618 F34C  DB 63       SWEB:	IN	A,(SELECT)
+  619 F34E  E6 7F       	AND	7FH		;wait en active
+  620 F350  D3 63       	OUT	(SELECT),A
+  621 F352  C9          	RET
+  622                   ;
+  623                   ;	Initialize for disk transfer
+  624                   ;	****** big difference
+  625 F353  06 00       TRINT:	LD	B,0
+  626 F355  DD 7E 00    	LD	A,(IX+NSCTRS)
+  627 F358  3C          	INC	A
+  628 F359  4F          	LD	C,A
+  629 F35A  3A 0043     	LD	A,(SCTR)
+  630 F35D  B9          	CP	C		;check for side
+  631 F35E  38 04       	JR	C,TRINT0
+  632 F360  06 10       	LD	B,10H
+  633 F362  0D          	DEC	C
+  634 F363  91          	SUB	C		;if side 2, subtrack
+  635 F364  F5          TRINT0: PUSH	AF
+  636 F365  CD F378     	CALL	TRINT1
+  637 F368  F1          	POP	AF
+  638 F369  D3 66       	OUT	(SECTOR),A
+Z80ASM SuperFast Relocating Macro Assembler     	    Z80ASM 1.30 Page  12
+DDBIOS  Z80
+
+  639 F36B  01 8067     	LD	BC,8067H
+  640 F36E  3A 0042     	LD	A,(UNIT)
+  641 F371  07          	RLCA
+  642 F372  30 D8       	JR	NC,SWEB
+  643 F374  06 00       	LD	B,00H
+  644 F376  18 D4       	JR	SWEB
+  645                   ;
+  646 F378  DB 63       TRINT1: IN	A,(SELECT)
+  647 F37A  2F          	CPL	
+  648 F37B  5F          	LD	E,A
+  649 F37C  E6 10       	AND	10H
+  650 F37E  B8          	CP	B
+  651 F37F  C8          	RET	Z
+  652 F380  7B          	LD	A,E
+  653 F381  E6 6F       	AND	6FH
+  654 F383  B0          	OR	B
+  655 F384  2F          	CPL
+  656 F385  D3 63       	OUT	(SELECT),A
+  657 F387  06 D2       	LD	B,0D2H		;delay for side change
+  658 F389  10 FE       TRINT2: DJNZ	TRINT2
+  659 F38B  C3 F226     	JP	IDRD
+  660                   ;
+  661                   ;	Force interrupt command for 1795
+  662                   ;	Return: Status in a
+  663                   ;
+  664 F38E  3E D0       FRCINT: LD	A,FINT
+  665 F390  D3 64       	OUT	(CMD),A
+  666 F392  3E 0A       	LD	A,0AH
+  667 F394  3D          FRC1:	DEC	A
+  668 F395  20 FD       	JR	NZ,FRC1
+  669 F397  DB 64       	IN	A,(STATUS)
+  670 F399  C9          	RET
+  671                   ;
+  672                   ;	Load a # of sectors (NREC)
+  673                   ;
+  674 F39A  CD F5DB     LOADER: CALL	UNITFX		;force drive setup
+  675 F39D  CD F17C     LD1:	CALL	READ		;read a sector
+  676 F3A0  C0          	RET	NZ
+  677 F3A1  CD F3B4     	CALL	INCP		;increment track/sector
+  678 F3A4  20 F7       	JR	NZ,LD1
+  679 F3A6  C9          	RET
+  680                   ;
+  681                   ;	Save a # of sectors (NREC)
+  682                   ;
+  683 F3A7  CD F5DB     SAVER:	CALL	UNITFX
+  684 F3AA  CD F198     SV1:	CALL	WRITE		;write a sector
+  685 F3AD  C0          	RET	NZ
+  686 F3AE  CD F3B4     	CALL	INCP		;increment
+  687 F3B1  20 F7       	JR	NZ,SV1
+  688 F3B3  C9          	RET
+  689                   ;
+  690                   ;	Increment sector and track
+  691                   ;
+  692 F3B4  2A 0040     INCP:	LD	HL,(TADDR)
+  693 F3B7  11 0080     	LD	DE,COLD 	;set to 128 bytes
+  694 F3BA  3A 0042     	LD	A,(UNIT)	;check for 256 bytes
+  695 F3BD  07          	RLCA
+  696 F3BE  30 03       	JR	NC,INCP1
+Z80ASM SuperFast Relocating Macro Assembler     	    Z80ASM 1.30 Page  13
+DDBIOS  Z80
+
+  697 F3C0  11 0100     	LD	DE,0100H	;set to 256
+  698 F3C3  19          INCP1:	ADD	HL,DE
+  699 F3C4  22 0040     	LD	(TADDR),HL
+  700 F3C7  21 0045     	LD	HL,NREC 	;point to # of records
+  701 F3CA  35          	DEC	(HL)		;less one
+  702 F3CB  C8          	RET	Z
+  703 F3CC  2B          	DEC	HL
+  704 F3CD  2B          	DEC	HL		;point to sctr
+  705 F3CE  34          	INC	(HL)		;up one
+  706 F3CF  3A 0049     	LD	A,(IDSV+1)	;set sign bit if ds
+  707 F3D2  B7          	OR	A
+  708 F3D3  DD E5       	PUSH	IX
+  709 F3D5  DD 2A 0053  	LD	IX,(IXSAV)	;get index for drive stats
+  710 F3D9  DD 7E 00    	LD	A,(IX+0)	;get # of sectors
+  711 F3DC  DD E1       	POP	IX
+  712 F3DE  F2 F3E2     	JP	P,INCP2
+  713 F3E1  07          	RLCA			;if ds, shift left
+  714 F3E2  3C          INCP2:	INC	A
+  715 F3E3  BE          	CP	(HL)		;last sctr on track?
+  716 F3E4  C0          	RET	NZ		;if not, return
+  717 F3E5  36 01       	LD	(HL),01H	;reset sector to 1
+  718 F3E7  23          	INC	HL
+  719 F3E8  34          	INC	(HL)		;bump track #
+  720 F3E9  B7          	OR	A
+  721 F3EA  C9          	RET
+  722                   ;
+  723                   ;	Format a disk - formats according to disk type
+  724                   ;	stored in UNIT
+  725                   ;
+  726 F3EB  CD F5DB     FMAT:	CALL	UNITFX		;force drive setup
+  727 F3EE  ED 73 0051  	LD	(TEMP2),SP	;save present stack
+  728 F3F2  FD E5       	PUSH	IY		;save regs
+  729 F3F4  DD E5       	PUSH	IX
+  730 F3F6  E5          	PUSH	HL
+  731 F3F7  21 1000     	LD	HL,FBUFF	;pointer to image area
+  732 F3FA  22 0040     	LD	(TADDR),HL
+  733 F3FD  ED 73 004D  	LD	(SPSV),SP	;set stack save
+  734 F401  E1          	POP	HL
+  735 F402  CD F1D3     	CALL	DRVSET		;setup unit select
+  736 F405  CC F1C7     	CALL	Z,HOME1 	;continue if no errors
+  737 F408  20 33       	JR	NZ,ERXIT
+  738 F40A  CD F444     	CALL	SCTRIM		;make sector image in ram
+  739 F40D  CD F4B3     	CALL	TRCKIM		;make track image in ram
+  740 F410  CD F584     	CALL	SIDECK		;set hl for side data
+  741 F413  AF          	XOR	A
+  742 F414  CD F4E7     IDSET:	CALL	SETID		;set sector and track id
+  743 F417  C5          	PUSH	BC
+  744 F418  CD F53B     	CALL	FMAT1		;format 1 track
+  745 F41B  CD F592     	CALL	NXTRK		;if double sided
+  746 F41E  C1          	POP	BC		;do both sides
+  747 F41F  20 05       	JR	NZ,FINISH	;quit if errors
+  748 F421  DD BE 01    	CP	(IX+NTRKS)	;reached last track yet?
+  749 F424  20 EE       	JR	NZ,IDSET	;brif not
+  750 F426  3E 4C       FINISH: LD	A,76		;putting 76 here
+  751 F428  32 0044     	LD	(TRK),A 	;monitor command to
+  752 F42B  DB 63       	IN	A,(SELECT)	;fix bit 5 so monitor
+  753 F42D  CB AF       	RES	5,A		;thinks the drive is
+  754 F42F  D3 63       	OUT	(SELECT),A	;single sided
+Z80ASM SuperFast Relocating Macro Assembler     	    Z80ASM 1.30 Page  14
+DDBIOS  Z80
+
+  755 F431  11 0055     	LD	DE,UNITCK
+  756 F434  1A          	LD	A,(DE)		;fix unitck to feflect
+  757 F435  CB EF       	SET	5,A		;change in select
+  758 F437  12          	LD	(DE),A		;register
+  759 F438  DD E1       	POP	IX
+  760 F43A  FD E1       	POP	IY
+  761 F43C  C9          	RET
+  762                   ;
+  763 F43D  DD E1       ERXIT:	POP	IX
+  764 F43F  ED 7B 0051  	LD	SP,(TEMP2)
+  765 F443  C9          	RET
+  766                   ;
+  767                   ;	Sector image control routine
+  768                   ;
+  769                   ;	Enter with: IX -> table of disk type variables
+  770                   ;		 TADDR = buffer space to be used for image
+  771                   ;
+  772                   ;	Note: This routine puts the first post data gap right
+  773                   ;	after the header.  TRCKIM then uses the image from this
+  774                   ;	point to duplicate the required number of sectors.
+  775                   ;
+  776 F444  2A 0040     SCTRIM: LD	HL,(TADDR)	;get image buffer ptr
+  777 F447  DD 7E 04    	LD	A,(IX+GAP2)	;check for dd or sd
+  778 F44A  0F          	RRCA			;if lsb of gap2 = 0
+  779 F44B  3E 4E       	LD	A,4EH		;use dd fill char
+  780 F44D  D2 F452     	JP	NC,HEADER
+  781 F450  3E FF       	LD	A,0FFH		;else use sd fill char
+  782 F452  5F          HEADER: LD	E,A
+  783 F453  DD 46 02    	LD	B,(IX+HEADR)	;get index fill
+  784 F456  CD F4AE     	CALL	IMBLD
+  785 F459  DD 46 05    	LD	B,(IX+GAP3)	;get post data gap fill
+  786 F45C  CD F4AE     	CALL	IMBLD
+  787 F45F  AF          	XOR	A
+  788 F460  DD 46 03    	LD	B,(IX+GAP1)	;sync field
+  789 F463  CD F4AE     	CALL	IMBLD
+  790 F466  CD F4A7     	CALL	MRKCHK		;see if dd for additional bytes
+  791 F469  3E FE       	LD	A,0FEH		;set id address mark
+  792 F46B  77          	LD	(HL),A
+  793 F46C  23          	INC	HL
+  794 F46D  E5          	PUSH	HL
+  795 F46E  D9          	EXX
+  796 F46F  D1          	POP	DE		;put 1st id byte addr -> de'
+  797 F470  D9          	EXX
+  798 F471  AF          	XOR	A
+  799 F472  06 04       	LD	B,04H		;clear track, side, sector and length
+  800 F474  CD F4AE     	CALL	IMBLD
+  801 F477  3E F7       	LD	A,0F7H		;id field crc
+  802 F479  77          	LD	(HL),A
+  803 F47A  23          	INC	HL
+  804 F47B  DD 46 04    	LD	B,(IX+GAP2)	;post id gap
+  805 F47E  78          	LD	A,B
+  806 F47F  CB 3F       	SRL	A
+  807 F481  3C          	INC	A
+  808 F482  4F          	LD	C,A		;set (gap2/2+1)
+  809 F483  7B          	LD	A,E
+  810 F484  CD F4AE     	CALL	IMBLD
+  811 F487  41          	LD	B,C		;use for next gap
+  812 F488  AF          	XOR	A
+Z80ASM SuperFast Relocating Macro Assembler     	    Z80ASM 1.30 Page  15
+DDBIOS  Z80
+
+  813 F489  CD F4AE     	CALL	IMBLD
+  814 F48C  CD F4A7     	CALL	MRKCHK		;see if we need dd additional bytes
+  815 F48F  3E FB       	LD	A,0FBH		;data address mark
+  816 F491  77          	LD	(HL),A
+  817 F492  23          	INC	HL
+  818 F493  06 80       	LD	B,80H		;set for 128 bytes
+  819 F495  3A 0042     	LD	A,(UNIT)
+  820 F498  07          	RLCA			;check bit 7
+  821 F499  30 02       	JR	NC,IDM
+  822 F49B  06 00       	LD	B,00H		;if set then use 256 bytes
+  823 F49D  3E E5       IDM:	LD	A,0E5H		;sector fill char
+  824 F49F  CD F4AE     	CALL	IMBLD
+  825 F4A2  3E F7       	LD	A,0F7H		;data crc
+  826 F4A4  77          	LD	(HL),A
+  827 F4A5  23          	INC	HL
+  828 F4A6  C9          	RET
+  829                   ;
+  830                   ;	Special id mark loader
+  831                   ;
+  832 F4A7  7B          MRKCHK: LD	A,E
+  833 F4A8  B7          	OR	A
+  834 F4A9  F8          	RET	M
+  835 F4AA  3E F5       	LD	A,0F5H		;put in 3 0f5h's if fill char
+  836 F4AC  06 03       	LD	B,03H		;is dd
+  837                   ;
+  838                   ;	Data block loader
+  839                   ;
+  840 F4AE  77          IMBLD:	LD	(HL),A		;fill with a
+  841 F4AF  23          	INC	HL
+  842 F4B0  10 FC       	DJNZ	IMBLD		;b times
+  843 F4B2  C9          	RET
+  844                   ;
+  845                   ;	Track image controller routine
+  846                   ;
+  847 F4B3  D9          TRCKIM: EXX
+  848 F4B4  DD 46 00    	LD	B,(IX+NSCTRS)	;bc' = # of sectors
+  849 F4B7  05          	DEC	B
+  850 F4B8  D9          	EXX
+  851 F4B9  ED 5B 0040  	LD	DE,(TADDR)	;de->start of image buf
+  852 F4BD  E5          	PUSH	HL		;hl->1st byte of 2nd sector
+  853 F4BE  B7          	OR	A		;clear cy flag
+  854 F4BF  DD 4E 02    	LD	C,(IX+HEADR)	;skip header in repeat fills
+  855 F4C2  06 00       	LD	B,0
+  856 F4C4  EB          	EX	DE,HL
+  857 F4C5  09          	ADD	HL,BC		;hl->post data gap
+  858 F4C6  EB          	EX	DE,HL		;to de
+  859 F4C7  ED 52       	SBC	HL,DE		;hl = # of bytes/sector
+  860 F4C9  E5          	PUSH	HL
+  861 F4CA  C1          	POP	BC		;to bc
+  862 F4CB  E1          	POP	HL
+  863 F4CC  C5          	PUSH	BC
+  864 F4CD  EB          	EX	DE,HL		;current buffer location to de
+  865 F4CE  D9          	EXX			;post data gap start in hl
+  866 F4CF  D9          BLDTRK: EXX
+  867 F4D0  ED B0       	LDIR			;build a sector 
+  868 F4D2  C1          	POP	BC		;recall # of bytes/sector
+  869 F4D3  C5          	PUSH	BC
+  870 F4D4  D9          	EXX
+Z80ASM SuperFast Relocating Macro Assembler     	    Z80ASM 1.30 Page  16
+DDBIOS  Z80
+
+  871 F4D5  10 F8       	DJNZ	BLDTRK		;b' # of sectors-1
+  872 F4D7  D9          	EXX
+  873 F4D8  C1          	POP	BC
+  874 F4D9  EB          	EX	DE,HL
+  875 F4DA  3A 0042     	LD	A,(UNIT)
+  876 F4DD  CB 67       	BIT	4,A		;test sided bit
+  877 F4DF  3E 80       	LD	A,80H		;setup for ds
+  878 F4E1  20 01       	JR	NZ,TRCKDN
+  879 F4E3  AF          	XOR	A		;setup for ss
+  880 F4E4  6F          TRCKDN: LD	L,A		;put side info into hl
+  881 F4E5  65          	LD	H,L
+  882 F4E6  C9          	RET
+  883                   ;
+  884                   ;	Sector id controller routine
+  885                   ;
+  886 F4E7  E5          SETID:	PUSH	HL
+  887 F4E8  C5          	PUSH	BC
+  888 F4E9  D9          	EXX
+  889 F4EA  C1          	POP	BC		;# of bytes/sector ->bc'
+  890 F4EB  E1          	POP	HL		;side #/ds status ->hl'
+  891 F4EC  D5          	PUSH	DE
+  892 F4ED  FD E1       	POP	IY		;move sector id addr ->iy
+  893 F4EF  D5          	PUSH	DE
+  894 F4F0  08          	EX	AF,AF' 
+  895 F4F1  16 01       	LD	D,01H
+  896 F4F3  DD 7E 00    	LD	A,(IX+NSCTRS)	;a' = # of sectors
+  897 F4F6  FE 1A       	CP	1AH		;if 26 sectors, standard
+  898 F4F8  3E 01       	LD	A,01H		;format is used
+  899 F4FA  28 08       	JR	Z,ID1
+  900 F4FC  DD 7E 00    	LD	A,(IX+NSCTRS)	;if not alternate sector number
+  901 F4FF  CB 3F       	SRL	A		;if even # of sectors, sctr 1 is 1st
+  902 F501  3C          	INC	A		;if odd, (nsctrs/2)+1 is 1st
+  903 F502  30 26       	JR	NC,ID2
+  904 F504  08          ID1:	EX	AF,AF'
+  905 F505  FD 77 00    	LD	(IY),A		;set track number
+  906 F508  B5          	OR	L
+  907 F509  F2 F511     	JP	P,ID1A
+  908 F50C  FD 74 01    	LD	(IY+1),H	;set side number
+  909 F50F  CB BF       	RES	7,A
+  910 F511  08          ID1A:	EX	AF,AF'
+  911 F512  FD 77 02    	LD	(IY+2),A	;set sector number
+  912 F515  F5          	PUSH	AF
+  913 F516  3A 0042     	LD	A,(UNIT)
+  914 F519  07          	RLCA			;check 256 byte bit
+  915 F51A  30 05       	JR	NC,ID4
+  916 F51C  3E 01       	LD	A,01H		;use 256 byte code
+  917 F51E  FD 77 03    	LD	(IY+3),A	;in sector length
+  918 F521  F1          ID4:	POP	AF
+  919 F522  DD BE 00    	CP	(IX+NSCTRS)	;all sectors done?
+  920 F525  28 10       	JR	Z,ID3
+  921 F527  FD 09       	ADD	IY,BC		;if not index into next sector
+  922 F529  3C          	INC	A		;and write next id field
+  923 F52A  5F          ID2:	LD	E,A
+  924 F52B  3E 1A       	LD	A,1AH
+  925 F52D  DD BE 00    	CP	(IX+NSCTRS)	;standard format?
+  926 F530  7B          	LD	A,E
+  927 F531  28 D1       	JR	Z,ID1		;if so, sectors are sequential
+  928 F533  7A          	LD	A,D		;else alternate then
+Z80ASM SuperFast Relocating Macro Assembler     	    Z80ASM 1.30 Page  17
+DDBIOS  Z80
+
+  929 F534  53          	LD	D,E
+  930 F535  18 CD       	JR	ID1
+  931                   ;
+  932 F537  08          ID3:	EX	AF,AF'
+  933 F538  D1          	POP	DE
+  934 F539  D9          	EXX
+  935 F53A  C9          	RET
+  936                   ;
+  937                   ;	Disk format write controller
+  938                   ;
+  939 F53B  D5          FMAT1:	PUSH	DE		;save loc of fill char
+  940 F53C  C5          	PUSH	BC		;save # of bytes/sector
+  941 F53D  D9          	EXX
+  942 F53E  08          	EX	AF,AF'
+  943 F53F  C1          	POP	BC		;to bc'
+  944 F540  D5          	PUSH	DE
+  945 F541  5F          	LD	E,A		;e' = # of sectors/track
+  946 F542  51          	LD	D,C		;d' = # of bytes/sector
+  947 F543  DD 46 02    	LD	B,(IX+HEADR)
+  948 F546  0E 67       	LD	C,DATA		;set port number
+  949 F548  2A 0040     	LD	HL,(TADDR)
+  950 F54B  3E 80       	LD	A,80H		;set for ready bit
+  951 F54D  32 0046     	LD	(ERMASK),A
+  952 F550  CD F34C     	CALL	SWEB		;enable wait states
+  953 F553  3A 0042     	LD	A,(UNIT)
+  954 F556  07          	RLCA			;test for 256 byte
+  955 F557  3E 00       	LD	A,00H		;128 byte code
+  956 F559  30 02       	JR	NC,FMAT3
+  957 F55B  3E 01       	LD	A,01H		;256 byte code
+  958 F55D  32 0050     FMAT3:	LD	(TEMP1),A
+  959 F560  3E F4       	LD	A,WRTCMD	;set command
+  960 F562  32 004C     	LD	(CMDSV),A
+  961 F565  F3          	DI
+  962 F566  D3 64       	OUT	(CMD),A 	;send it
+  963 F568  3A 0050     	LD	A,(TEMP1)
+  964 F56B  ED B3       	OTIR			;output header
+  965 F56D  42          	LD	B,D		;load data ctr for 1st sector
+  966 F56E  ED B3       FMAT5:	OTIR	
+  967 F570  B7          	OR	A
+  968 F571  28 02       	JR	Z,FMAT4
+  969 F573  ED B3       	OTIR			;if 256 bytes output another
+  970 F575  42          FMAT4:	LD	B,D		;reload data ctr for nxt sector
+  971 F576  1D          	DEC	E		;less one sector
+  972 F577  20 F5       	JR	NZ,FMAT5
+  973 F579  D1          	POP	DE
+  974 F57A  E1          	POP	HL		;point hl to fill char
+  975 F57B  7E          	LD	A,(HL)		;put fill char in a
+  976 F57C  ED 79       FMTOUT: OUT	(C),A		;gap4 = fill char to index mark
+  977 F57E  10 FC       	DJNZ	FMTOUT
+  978 F580  FB          	EI			;finish
+  979 F581  D9          	EXX
+  980 F582  08          	EX	AF,AF'
+  981 F583  C9          	RET
+  982                   ;
+  983                   ;	Side select
+  984                   ;
+  985 F584  EB          SIDECK: EX	DE,HL
+  986 F585  3A 0042     	LD	A,(UNIT)	;get disk type byte
+Z80ASM SuperFast Relocating Macro Assembler     	    Z80ASM 1.30 Page  18
+DDBIOS  Z80
+
+  987 F588  CB 67       	BIT	4,A		;test ds bit
+  988 F58A  3E 80       	LD	A,80H		;ds flag
+  989 F58C  20 01       	JR	NZ,SCHK1
+  990 F58E  AF          	XOR	A		;ss flag
+  991 F58F  6F          SCHK1:	LD	L,A		;set l as flag reg
+  992 F590  65          	LD	H,L		;h=side #,+side flag
+  993 F591  C9          	RET
+  994                   ;
+  995                   ;	Determines whether to increment the track
+  996                   ;	number or change sides
+  997                   ;
+  998 F592  08          NXTRK:	EX	AF,AF'
+  999 F593  3E 2F       	LD	A,2FH		;delay for track change
+ 1000 F595  10 FE       DEL1:	DJNZ	DEL1
+ 1001 F597  3D          	DEC	A
+ 1002 F598  20 FB       	JR	NZ,DEL1
+ 1003 F59A  DB 63       	IN	A,(SELECT)	;get hardware select
+ 1004 F59C  F6 80       	OR	80H		;turn off wait logic
+ 1005 F59E  CB 7D       	BIT	7,L		;check side bit
+ 1006 F5A0  28 10       	JR	Z,INCTRK	;skip side chg if ss
+ 1007 F5A2  CB 44       	BIT	0,H		;check side
+ 1008 F5A4  CB 84       	RES	0,H		;default to side 0
+ 1009 F5A6  20 0A       	JR	NZ,INCTRK	;if previous side = 1, inc trk
+ 1010 F5A8  24          	INC	H		;else set to side 1
+ 1011 F5A9  CB A7       	RES	4,A		;(neg) set to side 1 for
+ 1012 F5AB  D3 63       	OUT	(SELECT),A	;hardware store
+ 1013 F5AD  10 FE       DEL2:	DJNZ	DEL2
+ 1014 F5AF  08          	EX	AF,AF'
+ 1015 F5B0  BF          	CP	A
+ 1016 F5B1  C9          	RET
+ 1017                   ;
+ 1018 F5B2  CB E7       INCTRK: SET	4,A		;reset to side 0
+ 1019 F5B4  D3 63       	OUT	(SELECT),A
+ 1020 F5B6  08          	EX	AF,AF'          ;get track #
+ 1021 F5B7  3C          	INC	A		;and bump
+ 1022 F5B8  DD BE 01    	CP	(IX+NTRKS)	;last track?
+ 1023 F5BB  C8          	RET	Z		;if so, then done
+ 1024 F5BC  32 0044     	LD	(TRK),A 	;save updated track #
+ 1025 F5BF  E5          	PUSH	HL		;save error return
+ 1026 F5C0  ED 73 004D  	LD	(SPSV),SP
+ 1027 F5C4  E1          	POP	HL
+ 1028 F5C5  10 FE       INCTDL: DJNZ	INCTDL		;side change delay
+ 1029 F5C7  D9          	EXX
+ 1030 F5C8  EB          	EX	DE,HL
+ 1031 F5C9  DD 7E 07    	LD	A,(IX+SKNCMD)	;no verify seek
+ 1032 F5CC  CD F315     	CALL	SEEK2
+ 1033 F5CF  EB          	EX	DE,HL
+ 1034 F5D0  D9          	EXX
+ 1035 F5D1  DB 65       	IN	A,(TRACK)	;get current track
+ 1036 F5D3  47          	LD	B,A
+ 1037 F5D4  3A 0044     	LD	A,(TRK) 	;get desired track
+ 1038 F5D7  B8          	CP	B		;test for the same
+ 1039 F5D8  06 00       	LD	B,00H		;reset b
+ 1040 F5DA  C9          	RET
+ 1041                   ;
+ 1042                   ;	Force drive setup
+ 1043                   ;
+ 1044 F5DB  3E FF       UNITFX: LD	A,0FFH		;set old <> new
+Z80ASM SuperFast Relocating Macro Assembler     	    Z80ASM 1.30 Page  19
+DDBIOS  Z80
+
+ 1045 F5DD  32 0055     	LD	(UNITCK),A
+ 1046 F5E0  C9          	RET
+ 1047                   ;
+ 1048                   
+ 1049         F5E1      EBIOS	EQU	$
+ 1050                   ;
+ 1051 F5E1    0020      	DEFS	DEXEC-EBIOS+1		;set to fill
+ 1052                   ;
+ 1053                   ;	Drive evaluation exec
+ 1054                   ;
+ 1055         F600      	ORG	CBOOT+600H
+ 1056                   ;
+ 1057 F600  31 0080     DEXEC:	LD	SP,COLD
+ 1058 F603  21 F65B     	LD	HL,MSG1
+ 1059 F606  CD F638     	CALL	PTXT		;'Enter request #, drive #'
+ 1060 F609  CD F641     	CALL	SCAN
+ 1061 F60C  20 20       	JR	NZ,INERR
+ 1062 F60E  7D          	LD	A,L
+ 1063 F60F  32 0042     	LD	(UNIT),A
+ 1064 F612  7C          	LD	A,H
+ 1065 F613  32 0039     	LD	(RQST),A
+ 1066 F616  CD F018     	CALL	HME		;setup table addr
+ 1067 F619  DD 2A 0053  	LD	IX,(IXSAV)
+ 1068 F61D  3A 0039     	LD	A,(RQST)
+ 1069 F620  CD F67C     	CALL	DECODE		;decode and execute command
+ 1070 F623  CD F018     	CALL	HME
+ 1071 F626  21 F66E     	LD	HL,MSG3
+ 1072 F629  CD F638     	CALL	PTXT		;task complete
+ 1073 F62C  18 D2       	JR	DEXEC
+ 1074                   ;
+ 1075 F62E  0E 3F       INERR:	LD	C,3FH
+ 1076 F630  CD F00C     	CALL	CONOUT
+ 1077 F633  CD F6C6     	CALL	CRLF
+ 1078 F636  18 C8       	JR	DEXEC
+ 1079                   ;
+ 1080 F638  CD F653     PTXT:	CALL	CHKMON
+ 1081 F63B  C2 E741     	JP	NZ,PTXTR
+ 1082 F63E  C3 E707     	JP	PTXTV
+ 1083                   ;
+ 1084 F641  CD F653     SCAN:	CALL	CHKMON
+ 1085 F644  C2 E79A     	JP	NZ,SCANR
+ 1086 F647  C3 E760     	JP	SCANV
+ 1087                   ;
+ 1088 F64A  CD F653     PACC:	CALL	CHKMON
+ 1089 F64D  C2 E74D     	JP	NZ,PACCR
+ 1090 F650  C3 E713     	JP	PACCV
+ 1091                   ;
+ 1092 F653  47          CHKMON: LD	B,A
+ 1093 F654  3A E028     	LD	A,(0E028H)
+ 1094 F657  FE 01       	CP	01H
+ 1095 F659  78          	LD	A,B
+ 1096 F65A  C9          	RET
+ 1097                   ;
+ 1098 F65B  54 65 73 74 MSG1:	DB	'Test#Drv# (TTDD): '
+ 1099 F66D  03          	DB	03H
+ 1100 F66E  0A 0D       MSG3:	DB	0AH,0DH
+ 1101 F670  54 61 73 6B 	DB	'Task done'
+ 1102 F679  0D 0A 03    	DB	0DH,0AH,03H
+Z80ASM SuperFast Relocating Macro Assembler     	    Z80ASM 1.30 Page  20
+DDBIOS  Z80
+
+ 1103                   ;
+ 1104                   ;	Decode request and execute it
+ 1105                   ;
+ 1106 F67C  FE 00       DECODE: CP	00H
+ 1107 F67E  CA F7D1     	JP	Z,TSTSK 	;seek test
+ 1108 F681  FE 05       	CP	05H
+ 1109 F683  28 19       	JR	Z,FORMAT
+ 1110 F685  38 60       	JR	C,DIAG
+ 1111 F687  FE FF       	CP	0FFH
+ 1112 F689  C0          	RET	NZ
+ 1113 F68A  21 F694     	LD	HL,MSG2
+ 1114 F68D  CD F638     	CALL	PTXT
+ 1115 F690  CD F641     	CALL	SCAN
+ 1116 F693  E9          	JP	(HL)
+ 1117                   ;
+ 1118 F694  41 64 64 72 MSG2:	DB	'Address: '
+ 1119 F69D  03          	DB	03H
+ 1120                   ;
+ 1121                   ;
+ 1122 F69E  CD F033     FORMAT: CALL	FMATE
+ 1123 F6A1  C9          	RET
+ 1124                   ;
+ 1125                   ;	Error print routine
+ 1126                   ;
+ 1127 F6A2  21 F6CF     ERROR:	LD	HL,ERMSG
+ 1128 F6A5  CD F638     	CALL	PTXT		;'Disk error...'
+ 1129 F6A8  3A 004C     	LD	A,(CMDSV)
+ 1130 F6AB  CD F7EC     	CALL	PACSPC		;print command
+ 1131 F6AE  3A 0047     	LD	A,(ERSTAT)
+ 1132 F6B1  CD F7EC     	CALL	PACSPC		;print status
+ 1133 F6B4  3A 0042     	LD	A,(UNIT)
+ 1134 F6B7  CD F7EC     	CALL	PACSPC		;unit number
+ 1135 F6BA  3A 0044     	LD	A,(TRK)
+ 1136 F6BD  CD F7EC     	CALL	PACSPC
+ 1137 F6C0  3A 0043     	LD	A,(SCTR)
+ 1138 F6C3  CD F64A     	CALL	PACC
+ 1139 F6C6  CD F653     CRLF:	CALL	CHKMON
+ 1140 F6C9  C2 E72F     	JP	NZ,CRLFR
+ 1141 F6CC  C3 E6F5     	JP	CRLFV
+ 1142                   
+ 1143 F6CF  43 6D 64 20 ERMSG:	DB	'Cmd Stat Drv Trk Sctr> '
+ 1144 F6E6  03          	DB	03H
+ 1145                   ;
+ 1146                   ;	Read/write diagnostics
+ 1147                   ;	Continues until a '.' is entered
+ 1148                   ;
+ 1149 F6E7  AF          DIAG:	XOR	A
+ 1150 F6E8  32 0044     	LD	(TRK),A
+ 1151 F6EB  3C          	INC	A
+ 1152 F6EC  32 0043     	LD	(SCTR),A
+ 1153 F6EF  18 54       	JR	DIAG1
+ 1154 F6F1  21 0800     DIA10:	LD	HL,BFFR1
+ 1155 F6F4  22 0040     	LD	(TADDR),HL
+ 1156 F6F7  CD F02A     	CALL	WRE
+ 1157 F6FA  C4 F6A2     	CALL	NZ,ERROR
+ 1158 F6FD  21 0900     DIA11:	LD	HL,BFFR2
+ 1159 F700  22 0040     	LD	(TADDR),HL
+ 1160 F703  CD F027     	CALL	RDE
+Z80ASM SuperFast Relocating Macro Assembler     	    Z80ASM 1.30 Page  21
+DDBIOS  Z80
+
+ 1161 F706  C4 F6A2     	CALL	NZ,ERROR
+ 1162 F709  3A 0039     	LD	A,(RQST)
+ 1163 F70C  FE 02       	CP	02H
+ 1164 F70E  28 0F       	JR	Z,DIAG3
+ 1165 F710  F5          	PUSH	AF
+ 1166 F711  CD F759     	CALL	COMPR
+ 1167 F714  F1          	POP	AF
+ 1168 F715  FE 03       	CP	03H
+ 1169 F717  CA F7AE     	JP	Z,RINCR
+ 1170 F71A  FE 04       	CP	04H
+ 1171 F71C  CA F79E     	JP	Z,DINCR
+ 1172 F71F  21 0043     DIAG3:	LD	HL,SCTR 	;inc sector
+ 1173 F722  34          	INC	(HL)
+ 1174 F723  DD 7E 00    	LD	A,(IX+NSCTRS)
+ 1175 F726  E5          	PUSH	HL
+ 1176 F727  21 0042     	LD	HL,UNIT
+ 1177 F72A  CB 66       	BIT	4,(HL)		;test sides
+ 1178 F72C  E1          	POP	HL
+ 1179 F72D  28 01       	JR	Z,SS1		;skip if ss
+ 1180 F72F  07          	RLCA			;else double # of sectors
+ 1181 F730  3C          SS1:	INC	A		;and add 1
+ 1182 F731  BE          	CP	(HL)		;test for end of trk
+ 1183 F732  20 11       	JR	NZ,DIAG1
+ 1184 F734  36 01       	LD	(HL),01H	;if there set to sector 1
+ 1185 F736  23          	INC	HL		;point to trk
+ 1186 F737  34          	INC	(HL)		;inc trk #
+ 1187 F738  DD 7E 01    	LD	A,(IX+NTRKS)
+ 1188 F73B  BE          	CP	(HL)
+ 1189 F73C  20 07       	JR	NZ,DIAG1
+ 1190 F73E  36 00       	LD	(HL),00H	;set to trk 0
+ 1191 F740  0E 50       	LD	C,50H
+ 1192 F742  CD F00C     	CALL	CONOUT		;'P' for complete test
+ 1193 F745  CD F006     DIAG1:	CALL	CONST
+ 1194 F748  28 06       	JR	Z,DIAG2
+ 1195 F74A  CD F009     	CALL	CONIN
+ 1196 F74D  FE 2E       	CP	2EH
+ 1197 F74F  C8          	RET	Z
+ 1198 F750  3A 0039     DIAG2:	LD	A,(RQST)
+ 1199 F753  FE 02       	CP	02H
+ 1200 F755  28 A6       	JR	Z,DIA11
+ 1201 F757  18 98       	JR	DIA10
+ 1202                   ;
+ 1203 F759  21 0900     COMPR:	LD	HL,BFFR2
+ 1204 F75C  EB          	EX	DE,HL
+ 1205 F75D  21 0800     	LD	HL,BFFR1
+ 1206 F760  3A 0042     	LD	A,(UNIT)
+ 1207 F763  07          	RLCA			;test 256 byte bit
+ 1208 F764  06 80       	LD	B,80H		;128 bytes
+ 1209 F766  30 02       	JR	NC,CMPR1
+ 1210 F768  06 00       	LD	B,00H		;256 bytes
+ 1211 F76A  1A          CMPR1:	LD	A,(DE)
+ 1212 F76B  BE          	CP	(HL)
+ 1213 F76C  3E FF       	LD	A,0FFH
+ 1214 F76E  32 0047     	LD	(ERSTAT),A
+ 1215 F771  C2 F6A2     	JP	NZ,ERROR
+ 1216 F774  23          	INC	HL
+ 1217 F775  13          	INC	DE
+ 1218 F776  10 F2       	DJNZ	CMPR1
+Z80ASM SuperFast Relocating Macro Assembler     	    Z80ASM 1.30 Page  22
+DDBIOS  Z80
+
+ 1219 F778  21 0038     INCRD:	LD	HL,0038H
+ 1220 F77B  11 0800     	LD	DE,BFFR1
+ 1221 F77E  06 40       	LD	B,40H
+ 1222 F780  3A 0042     	LD	A,(UNIT)
+ 1223 F783  07          	RLCA	
+ 1224 F784  38 02       	JR	C,IR1
+ 1225 F786  CB 20       	SLA	B		;double # of bytes
+ 1226 F788  7E          IR1:	LD	A,(HL)
+ 1227 F789  0F          	RRCA
+ 1228 F78A  38 01       	JR	C,HERE
+ 1229 F78C  13          	INC	DE
+ 1230 F78D  ED 5F       HERE:	LD	A,R
+ 1231 F78F  12          	LD	(DE),A
+ 1232 F790  13          	INC	DE
+ 1233 F791  13          	INC	DE
+ 1234 F792  10 F9       	DJNZ	HERE
+ 1235 F794  7E          	LD	A,(HL)
+ 1236 F795  0F          	RRCA	
+ 1237 F796  38 03       	JR	C,SKIP
+ 1238 F798  3C          	INC	A
+ 1239 F799  77          	LD	(HL),A
+ 1240 F79A  C9          	RET
+ 1241                   ;
+ 1242 F79B  AF          SKIP:	XOR	A
+ 1243 F79C  77          	LD	(HL),A
+ 1244 F79D  C9          	RET
+ 1245                   ;
+ 1246 F79E  E5          DINCR:	PUSH	HL
+ 1247 F79F  21 0042     	LD	HL,UNIT
+ 1248 F7A2  7E          	LD	A,(HL)
+ 1249 F7A3  E6 F0       	AND	0F0H		;strip drive type bits
+ 1250 F7A5  77          	LD	(HL),A		;save
+ 1251 F7A6  ED 5F       	LD	A,R		;get random number
+ 1252 F7A8  00          	NOP
+ 1253 F7A9  E6 01       	AND	01H		;strip drive bit
+ 1254 F7AB  B6          	OR	(HL)		;set random unit
+ 1255 F7AC  77          	LD	(HL),A
+ 1256 F7AD  E1          	POP	HL
+ 1257 F7AE  DD 7E 00    RINCR:	LD	A,(IX+NSCTRS)
+ 1258 F7B1  3C          	INC	A
+ 1259 F7B2  47          	LD	B,A
+ 1260 F7B3  ED 5F       	LD	A,R
+ 1261 F7B5  E6 1F       	AND	1FH
+ 1262 F7B7  B7          	OR	A
+ 1263 F7B8  28 F4       	JR	Z,RINCR 	;sector 0 illegal
+ 1264 F7BA  32 0043     	LD	(SCTR),A
+ 1265 F7BD  B8          	CP	B
+ 1266 F7BE  30 EE       	JR	NC,RINCR	;if #>nsctrs, try again
+ 1267 F7C0  DD 7E 01    ONCM:	LD	A,(IX+NTRKS)
+ 1268 F7C3  47          	LD	B,A
+ 1269 F7C4  ED 5F       	LD	A,R
+ 1270 F7C6  E6 7F       	AND	7FH
+ 1271 F7C8  32 0044     	LD	(TRK),A
+ 1272 F7CB  B8          	CP	B
+ 1273 F7CC  30 F2       	JR	NC,ONCM 	;if #>ntrks, try again
+ 1274 F7CE  C3 F745     	JP	DIAG1
+ 1275                   ;
+ 1276 F7D1  CD F018     TSTSK:	CALL	HME
+Z80ASM SuperFast Relocating Macro Assembler     	    Z80ASM 1.30 Page  23
+DDBIOS  Z80
+
+ 1277 F7D4  DD 7E 01    	LD	A,(IX+NTRKS)
+ 1278 F7D7  3D          	DEC	A
+ 1279 F7D8  D3 67       	OUT	(DATA),A
+ 1280 F7DA  DD 7E 07    	LD	A,(IX+SKNCMD)	;seek w/no verify
+ 1281 F7DD  D3 64       	OUT	(CMD),A
+ 1282 F7DF  CD F006     	CALL	CONST
+ 1283 F7E2  28 ED       	JR	Z,TSTSK
+ 1284 F7E4  CD F009     	CALL	CONIN
+ 1285 F7E7  FE 2E       	CP	2EH
+ 1286 F7E9  C8          	RET	Z
+ 1287 F7EA  18 E5       	JR	TSTSK
+ 1288                   ;
+ 1289 F7EC  CD F64A     PACSPC: CALL	PACC
+ 1290 F7EF  0E 20       	LD	C,20H
+ 1291 F7F1  C3 F00C     	JP	CONOUT
+ 1292                   ;
+ 1293                   	END
+ 0 Error(s) Detected.
+ 2036 Absolute Bytes. 233 Symbols Detected.
+
